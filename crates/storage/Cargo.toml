@@ -1,0 +1,17 @@
+[package]
+name = "meridian-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Meridian 存储层：DuckDB 热数据/元数据 + Parquet 冷数据（Hive 分区）"
+
+[dependencies]
+meridian-core = { workspace = true }
+duckdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+meridian-quant-engine = { workspace = true }
+meridian-indicators = { workspace = true }

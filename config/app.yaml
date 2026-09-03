@@ -1,0 +1,11 @@
+# 应用基础配置：软件名 / 路径。代码零硬编码（验收标准 6），全部从本目录读取。
+name: Meridian
+version: 0.1.0
+locale: zh-CN
+
+paths:
+  data_dir: data        # 运行时数据（duckdb / parquet），已 gitignore
+  report_dir: reports   # Markdown 报告输出目录
+
+log:
+  level: info

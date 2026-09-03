@@ -1,0 +1,11 @@
+# 数据源配置。Phase 0 仅 A 股（akshare）；us/hk/commodity/fund 为 Phase 1。
+default: akshare
+
+sources:
+  akshare:
+    module: meridian.data.cn_stock   # 实现类所在模块（DataSource 适配层）
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2.0
+    timeout_seconds: 30
+    # akshare 接口常变，参数集中在 python/meridian/data/cn_stock.py 适配层内

@@ -1,0 +1,14 @@
+[package]
+name = "meridian-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Meridian 核心类型层：资产/K线/订单/信号/上下文与模型、Agent trait"
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

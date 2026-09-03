@@ -1,0 +1,10 @@
+[package]
+name = "meridian-indicators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Meridian 指标计算层：纯函数指标（sma/ema/macd/rsi/atr/boll/obv/adx/回撤/年化波动）+ 快照构建"
+
+[dependencies]
+meridian-core = { workspace = true }
+chrono = { workspace = true }

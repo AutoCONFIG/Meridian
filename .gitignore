@@ -1,0 +1,23 @@
+# Rust
+/target/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 运行时数据（DuckDB / Parquet，由代码在首次运行时创建）
+data/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+reports/
+
+# maturin editable 构建产物（.pyd 扩展 + 调试符号）
+python/meridian/*.pyd
+python/meridian/*.pdb

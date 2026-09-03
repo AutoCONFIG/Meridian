@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "meridian"
+version = "0.1.0"
+description = "Meridian — AI 增强型量化投资研究与决策辅助平台"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "akshare>=1.15",
+    "pandas>=2.2",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["maturin>=1.7", "pytest>=8.2"]
+
+[project.scripts]
+meridian = "meridian.cli:main"
+
+[tool.maturin]
+# Rust 扩展模块（maturin mixed 布局要求 <python包>.<rust模块> 形式；
+# Python 侧导入：from meridian import meridian_core）
+module-name = "meridian.meridian_core"
+python-source = "python"
+manifest-path = "crates/pybind/Cargo.toml"
+features = ["pyo3/extension-module"]

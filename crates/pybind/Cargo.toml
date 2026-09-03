@@ -1,0 +1,21 @@
+[package]
+name = "meridian-pybind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PyO3 绑定层：Python 模型桥接与引擎暴露（全部 Python 交互代码隔离于此）"
+
+[lib]
+# 模块名固定（不随软件改名而变化，PLAN.md 第 7 节）
+name = "meridian_core"
+crate-type = ["cdylib", "rlib"]
+# lib 名与依赖 crate meridian-core 产物同名，doctest 解析 --extern 会撞车；本壳无 doctest
+doctest = false
+
+[dependencies]
+meridian-core = { workspace = true }
+meridian-indicators = { workspace = true }
+meridian-quant-engine = { workspace = true }
+meridian-storage = { workspace = true }
+pyo3 = { workspace = true }
+chrono = { workspace = true }

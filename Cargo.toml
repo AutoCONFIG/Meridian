@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/indicators",
+    "crates/quant_engine",
+    "crates/storage",
+    "crates/backtest",
+    "crates/pybind",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# 内部 crate（依赖方向：core <- indicators <- quant_engine；core <- storage；pybind 依赖全部）
+meridian-core = { path = "crates/core" }
+meridian-indicators = { path = "crates/indicators" }
+meridian-quant-engine = { path = "crates/quant_engine" }
+meridian-storage = { path = "crates/storage" }
+
+# 公共第三方依赖
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+duckdb = { version = "1.3", features = ["bundled", "chrono"] }
+anyhow = "1.0"
+pyo3 = "0.26"
+
+[profile.dev.package."*"]
+# 依赖（尤其 duckdb C++）在 dev 模式下也保持基本优化，避免运行时慢到不可用
+opt-level = 1
+
+[profile.dev.package.libduckdb-sys]
+opt-level = 3

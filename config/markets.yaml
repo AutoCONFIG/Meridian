@@ -1,0 +1,13 @@
+# 标的池：首批 3 只 A 股（600519 贵州茅台 / 300750 宁德时代 / 600547 山东黄金）。
+# 新增标的 = 加条目；新增资产类型 = 加条目 + config/scoring/{asset_type}.yaml，不改核心代码。
+markets:
+  - market: cn
+    asset_type: stock
+    frequency: daily
+    symbols:
+      - symbol: "600519"
+        name: 贵州茅台
+      - symbol: "300750"
+        name: 宁德时代
+      - symbol: "600547"
+        name: 山东黄金

@@ -1,0 +1,17 @@
+[package]
+name = "meridian-quant-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Meridian 量化引擎：规则模型 + 市场状态检测 + 三层综合评分引擎"
+
+[dependencies]
+meridian-core = { workspace = true }
+meridian-indicators = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
