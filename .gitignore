@@ -21,3 +21,6 @@ reports/
 # maturin editable 构建产物（.pyd 扩展 + 调试符号）
 python/meridian/*.pyd
 python/meridian/*.pdb
+
+# ZCode 客户端本地状态
+.mimosa/
