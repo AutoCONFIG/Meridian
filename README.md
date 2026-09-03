@@ -43,6 +43,7 @@ cargo test
 # 5. 端到端：分析一只 A 股，输出 Markdown 报告
 .venv/Scripts/python -m meridian.cli analyze --symbol 600519
 #   → reports/600519_<日期>.md，同时落库 data/meridian.duckdb
+#   数据源不可用时自动回退本地缓存（报告会标注数据来源）；--offline 强制离线读缓存
 ```
 
 > 代理提示：akshare 直连国内数据源；若系统代理拦截了 eastmoney，可 `NO_PROXY=*` 后重试。

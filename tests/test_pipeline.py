@@ -6,7 +6,17 @@ import pytest
 
 from conftest import ROOT, CsvSource, DummyModel
 from meridian import meridian_core as mc
+from meridian.data.base import BAR_COLUMNS, DataError, DataSource
 from meridian.orchestrator.pipeline import AnalysisPipeline
+
+
+class BrokenSource(DataSource):
+    """模拟数据源网络故障。"""
+
+    name = "broken"
+
+    def fetch_daily(self, request):
+        raise DataError("模拟网络故障：连接被远端关闭")
 
 
 def make_pipeline(tmp_path, extra_models=(), persist=False) -> AnalysisPipeline:
@@ -89,3 +99,76 @@ def test_pipeline_rejects_symbol_out_of_universe(tmp_path):
 
     with pytest.raises(ConfigError):
         pipeline.analyze("999999")
+
+
+# ---- 缓存回退 / 离线模式 ----
+
+def _prefill_cache(pipeline: AnalysisPipeline) -> None:
+    """把合成K线预灌进内存库，模拟"此前拉取成功已入库"。"""
+    df = _frame()
+    db = mc.PyDb.open_in_memory()
+    db.insert_bars(
+        symbol="600519", name="贵州茅台", market="cn", asset_type="stock", frequency="daily",
+        dates=[str(d) for d in df["date"]],
+        opens=df["open"].tolist(), highs=df["high"].tolist(), lows=df["low"].tolist(),
+        closes=df["close"].tolist(), volumes=df["volume"].tolist(), amounts=df["amount"].tolist(),
+    )
+    pipeline._db = db
+
+
+def test_pipeline_falls_back_to_cache_on_source_failure(tmp_path):
+    """数据源拉数失败 → 自动回退本地 DuckDB，报告标注数据来源。"""
+    pipeline = make_pipeline(tmp_path)
+    _prefill_cache(pipeline)
+    pipeline.source = BrokenSource()
+
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+
+    assert result.data_source == "cache"
+    assert result.fallback_reason and "数据源拉取失败" in result.fallback_reason
+    assert result.bar_count == len(_frame())
+
+    report = result.to_markdown()
+    assert "本地缓存" in report and "数据来源" in report
+    # 缓存数据同样走完整评分管线（可追溯指纹不缺席）
+    assert len(result.score["config_fingerprint"]) == 16
+
+
+def test_pipeline_offline_mode_reads_cache_directly(tmp_path):
+    """--offline：不触碰数据源，直接读本地库。"""
+    pipeline = make_pipeline(tmp_path)
+    _prefill_cache(pipeline)
+
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert result.data_source == "cache"
+    assert result.opportunity > 50.0
+    assert "离线模式" in result.to_markdown()
+
+
+def test_pipeline_raises_when_source_and_cache_both_empty(tmp_path):
+    """数据源失败且本地无缓存 → 合并两者信息的明确报错。"""
+    pipeline = make_pipeline(tmp_path)
+    _prefill_cache(pipeline)
+    pipeline.source = BrokenSource()
+    # 清空缓存库：换一个空内存库
+    pipeline._db = mc.PyDb.open_in_memory()
+
+    with pytest.raises(DataError) as exc_info:
+        pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+    msg = str(exc_info.value)
+    assert "有效K线不足" in msg and "模拟网络故障" in msg
+
+
+def test_cache_dates_normalized_like_live(tmp_path):
+    """缓存路径的日期与 live 路径同构（date 对象、升序、列序一致）。"""
+    from datetime import date
+
+    pipeline = make_pipeline(tmp_path)
+    _prefill_cache(pipeline)
+
+    entry, sym = pipeline._resolve("600519")
+    cache_df = pipeline._read_cache(entry, sym, date(2026, 1, 5), date(2026, 12, 31))
+    assert list(cache_df.columns) == BAR_COLUMNS
+    assert str(cache_df["date"].iloc[0]) == "2026-01-05"
+    assert cache_df["date"].is_monotonic_increasing

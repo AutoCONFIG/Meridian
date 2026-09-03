@@ -1,7 +1,8 @@
 """Meridian 命令行入口。
 
 用法：
-    meridian analyze --symbol 600519 [--start 2026-01-01] [--end 2026-08-31] [--output report.md]
+    meridian analyze --symbol 600519 [--start 2026-01-01] [--end 2026-08-31]
+                     [--output report.md] [--no-persist] [--offline]
 """
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（默认昨日）")
     p_analyze.add_argument("--output", default=None, help="Markdown 输出路径（缺省打印到 stdout，同时写入 reports/）")
     p_analyze.add_argument("--no-persist", action="store_true", help="不写入本地 DuckDB")
+    p_analyze.add_argument(
+        "--offline", action="store_true", help="离线模式：跳过数据源，直接读本地 DuckDB 缓存"
+    )
 
     return parser
 
@@ -35,7 +39,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     from meridian.orchestrator.pipeline import AnalysisPipeline
 
     pipeline = AnalysisPipeline(persist=not args.no_persist)
-    result = pipeline.analyze(args.symbol, start=args.start, end=args.end)
+    result = pipeline.analyze(args.symbol, start=args.start, end=args.end, offline=args.offline)
 
     report = result.to_markdown()
     report_path = pipeline.write_report(result, args.output)

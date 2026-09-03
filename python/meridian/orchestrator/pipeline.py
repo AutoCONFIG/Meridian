@@ -34,6 +34,12 @@ ACTION_SENTENCE = {
     "Avoid": "触发回避规则",
 }
 
+# 数据来源代码 → 报告展示文案
+DATA_SOURCE_LABEL = {
+    "live": "数据源拉取",
+    "cache": "本地缓存（DuckDB）",
+}
+
 
 @dataclass
 class AnalysisResult:
@@ -49,6 +55,8 @@ class AnalysisResult:
     start: str
     end: str
     score: dict
+    data_source: str = "live"  # live=数据源拉取 / cache=本地缓存回退
+    fallback_reason: str | None = None  # 回退原因（数据源失败详情 / 离线模式）
 
     # ---- 视图便捷属性 ----
     @property
@@ -73,6 +81,8 @@ class AnalysisResult:
             f"- 生成时间：{ts}",
             f"- 市场/类型/频率：{self.market} / {self.asset_type} / {self.frequency}",
             f"- 数据区间：{self.start} ~ {self.end}（{self.bar_count} 根日K）",
+            f"- 数据来源：{DATA_SOURCE_LABEL.get(self.data_source, self.data_source)}"
+            + (f"；{self.fallback_reason}" if self.fallback_reason else ""),
             f"- 市场状态（regime）：{self.regime}",
             "",
             "## 三层评分",
@@ -159,16 +169,42 @@ class AnalysisPipeline:
         return entry, sym
 
     # ---- 主流程 ----
-    def analyze(self, symbol: str, start: str | None = None, end: str | None = None) -> AnalysisResult:
+    def analyze(
+        self, symbol: str, start: str | None = None, end: str | None = None, offline: bool = False
+    ) -> AnalysisResult:
         entry, sym = self._resolve(symbol)
         end_date = date.fromisoformat(end) if end else date.today() - timedelta(days=1)
         start_date = date.fromisoformat(start) if start else end_date - timedelta(days=240)
 
-        df = self.source.fetch_daily(FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
-        if df.empty or len(df) < 30:
-            raise DataError(f"{symbol} 有效K线不足（{0 if df.empty else len(df)} 根），至少需要 30 根")
+        # 拉数：数据源失败或离线时回退本地缓存（上次成功拉取已入库的K线）
+        df: pd.DataFrame = pd.DataFrame(columns=BAR_COLUMNS)
+        fetch_error: DataError | None = None
+        if not offline:
+            try:
+                df = self.source.fetch_daily(FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
+            except DataError as exc:
+                fetch_error = exc
 
-        if self.persist:
+        data_source = "live"
+        fallback_reason = None
+        cached_len = 0
+        if offline or df.empty or len(df) < 30:
+            cached = self._read_cache(entry, sym, start_date, end_date)
+            cached_len = len(cached)
+            if cached_len > len(df):
+                df = cached
+                data_source = "cache"
+                fallback_reason = "离线模式（--offline）" if offline else f"数据源拉取失败，自动回退: {fetch_error}"
+
+        if df.empty or len(df) < 30:
+            origin = "离线模式下" if offline else "数据源与"
+            raise DataError(
+                f"{symbol} 有效K线不足（{len(df)} 根，至少 30 根；本地缓存 {cached_len} 根）。"
+                f"{origin}本地缓存均无可用数据"
+                + (f"；数据源错误: {fetch_error}" if fetch_error else "")
+            )
+
+        if self.persist and data_source == "live":
             self.db().insert_bars(
                 symbol=sym.symbol, name=sym.name, market=entry.market,
                 asset_type=entry.asset_type, frequency=entry.frequency,
@@ -198,7 +234,26 @@ class AnalysisPipeline:
             start=str(df["date"].iloc[0]),
             end=str(df["date"].iloc[-1]),
             score=score,
+            data_source=data_source,
+            fallback_reason=fallback_reason,
         )
+
+    def _read_cache(self, entry: MarketEntry, sym: SymbolEntry, start_date: date, end_date: date) -> pd.DataFrame:
+        """从本地 DuckDB 读K线（缓存回退 / 离线模式）。库中无数据返回空表。"""
+        rows = self.db().read_bars(
+            symbol=sym.symbol,
+            name=sym.name,
+            market=entry.market,
+            asset_type=entry.asset_type,
+            frequency=entry.frequency,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        if not rows:
+            return pd.DataFrame(columns=BAR_COLUMNS)
+        df = pd.DataFrame(rows)[BAR_COLUMNS]
+        df["date"] = pd.to_datetime(df["date"]).dt.date  # read_bars 返回字符串日期，与 live 路径对齐
+        return df.reset_index(drop=True)
 
     def write_report(self, result: AnalysisResult, output: str | Path | None = None) -> Path:
         out_dir = self.app.report_dir
