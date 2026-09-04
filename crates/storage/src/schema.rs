@@ -34,4 +34,48 @@ CREATE TABLE IF NOT EXISTS trend_scores (
     config_fingerprint  VARCHAR NOT NULL,
     PRIMARY KEY (market, symbol, date)
 );
+
+-- 决策台账（做账，append-only）：每次分析自动留痕一条 —— 记录"系统在何时、
+-- 基于哪个数据窗口/数据来源、给出什么建议"，凭 config_fingerprint + 数据窗口可复现。
+-- 与 trend_scores 的区别：trend_scores 按 (market, symbol, date) UPSERT 存最新；
+-- 台账每次分析追加一行，历史建议永不覆盖（审计语义）。
+CREATE TABLE IF NOT EXISTS decision_ledger (
+    id                 BIGINT   NOT NULL,
+    ts                 TIMESTAMP NOT NULL,
+    symbol             VARCHAR NOT NULL,
+    name               VARCHAR NOT NULL,
+    market             VARCHAR NOT NULL,
+    asset_type         VARCHAR NOT NULL,
+    frequency          VARCHAR NOT NULL,
+    data_start         DATE    NOT NULL,
+    data_end           DATE    NOT NULL,
+    bar_count          BIGINT  NOT NULL,
+    data_source        VARCHAR NOT NULL,
+    fallback_reason    VARCHAR,
+    regime             VARCHAR NOT NULL,
+    opportunity        DOUBLE  NOT NULL,
+    risk               DOUBLE  NOT NULL,
+    action             VARCHAR NOT NULL,
+    position_hint      DOUBLE,
+    rule_triggers      VARCHAR NOT NULL,
+    model_version      VARCHAR NOT NULL,
+    config_fingerprint VARCHAR NOT NULL,
+    report_path        VARCHAR,
+    PRIMARY KEY (id)
+);
+
+-- 人工决策/成交日志（append-only）：本软件不做交易，实际操作由用户手动补记；
+-- ledger_id 回链 decision_ledger.id，形成"系统建议 → 人工决策"证据链。
+CREATE TABLE IF NOT EXISTS trade_journal (
+    id         BIGINT   NOT NULL,
+    ts         TIMESTAMP NOT NULL,
+    symbol     VARCHAR NOT NULL,
+    market     VARCHAR NOT NULL,
+    side       VARCHAR NOT NULL,
+    quantity   DOUBLE,
+    price      DOUBLE,
+    note       VARCHAR,
+    ledger_id  BIGINT,
+    PRIMARY KEY (id)
+);
 "#;
