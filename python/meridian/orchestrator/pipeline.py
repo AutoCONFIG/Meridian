@@ -8,10 +8,11 @@ Phase 0 数据流（PLAN.md 第 5/9 节）：
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
 
 import pandas as pd
 
@@ -25,6 +26,9 @@ from meridian.config import (
     SymbolEntry,
 )
 from meridian.data.base import BAR_COLUMNS, DataError, DataSource, FetchRequest
+
+if TYPE_CHECKING:
+    from meridian.ledger import LedgerBook
 
 ACTION_SENTENCE = {
     "Add": "机会与风险条件满足规则 Add 档",
@@ -40,6 +44,15 @@ DATA_SOURCE_LABEL = {
     "store": "本地库（增量同步）",
     "cache": "本地缓存（DuckDB）",
 }
+
+# 模型名 → 摘要用语（展示层映射，非评分逻辑）
+_MODEL_LABEL = {
+    "trend_model": "趋势",
+    "momentum_model": "动量",
+    "capital_model": "资金",
+    "risk_model": "风险",
+}
+_DIR_TEXT = {"up": "向上", "down": "向下", "neutral": "中性"}
 
 
 @dataclass
@@ -86,6 +99,9 @@ class AnalysisResult:
             + (f"；{self.fallback_reason}" if self.fallback_reason else ""),
             f"- 市场状态（regime）：{self.regime}",
             "",
+        ]
+        lines += self._summary_lines()
+        lines += [
             "## 三层评分",
             "",
             "| 层 | 分数 | 说明 |",
@@ -116,6 +132,39 @@ class AnalysisResult:
             "",
         ]
         return "\n".join(lines)
+
+    def _summary_lines(self) -> list[str]:
+        """结论先行：规则模板把评分结构翻译成人话（不涉及 AI，全部来自落库字段）。"""
+        action = self.score["action"]
+
+        # 机会端：各模型方向一览（从因子描述提取方向词，综合层固定格式"方向X、……"）
+        opp_parts: list[str] = []
+        for f in self.score["opportunity"]["factors"]:
+            direction = f["description"].split("、")[0].replace("方向", "")
+            label = _MODEL_LABEL.get(f["name"], f["name"])
+            opp_parts.append(f"{label}{_DIR_TEXT.get(direction, direction)}")
+
+        # 风险端：取贡献为正的触发项，按贡献降序最多 3 条
+        risk_parts: list[str] = []
+        for f in self.score["risk"]["factors"]:
+            triggers = [d for d in f.get("details", []) if d.get("contribution", 0) > 0]
+            triggers.sort(key=lambda d: -d["contribution"])
+            risk_parts += [d["description"].rstrip("。") for d in triggers[:3]]
+
+        lines = ["## 结论", ""]
+        if opp_parts:
+            lines.append(f"机会端：{'、'.join(opp_parts)}。")
+        lines.append(
+            f"风险端：{'；'.join(risk_parts)}。" if risk_parts else f"风险端：风险分 {self.risk:.0f}/100。"
+        )
+        triggers = "；".join(action.get("rule_triggers", []))
+        lines.append(
+            f"综合：机会 {self.opportunity:.1f}/100、风险 {self.risk:.1f}/100 → **{action['action']}**"
+            + (f"（规则：{triggers}）" if triggers else "")
+            + "。"
+        )
+        lines.append("")
+        return lines
 
     def _trigger_detail_lines(self, layer: str) -> list[str]:
         """模型内部触发明细（"为什么"）：综合层从模型输出保留的规则触发。"""
@@ -158,6 +207,7 @@ class AnalysisPipeline:
         self.persist = persist
         self._extra_models = list(extra_models)
         self._db: mc.PyDb | None = None
+        self._ledger: "LedgerBook | None" = None
         self._engines: dict[str, mc.PyEngine] = {}  # asset_type → 引擎
         self._sources: dict[tuple[str, str], DataSource] = {}  # (market, asset_type) → 组合源
 
@@ -220,6 +270,15 @@ class AnalysisPipeline:
             self.app.data_dir.mkdir(parents=True, exist_ok=True)
             self._db = mc.PyDb.open(str(self.app.data_dir / "meridian.duckdb"))
         return self._db
+
+    @property
+    def ledger(self) -> "LedgerBook":
+        """决策台账门面（做账）。复用 db() 连接，避免 DuckDB 文件锁冲突。"""
+        from meridian.ledger import LedgerBook
+
+        if self._ledger is None:
+            self._ledger = LedgerBook(self.db())
+        return self._ledger
 
     def _resolve(self, symbol: str, name: str | None = None) -> tuple[MarketEntry, SymbolEntry]:
         # 标的池里有就用配置（带名称）；没有则按代码模式自动识别，不挡即兴分析
@@ -307,7 +366,7 @@ class AnalysisPipeline:
             volumes=df["volume"].tolist(), amounts=df["amount"].tolist(),
         )
 
-        return AnalysisResult(
+        result = AnalysisResult(
             symbol=sym.symbol,
             name=sym.name,
             market=entry.market,
@@ -321,6 +380,22 @@ class AnalysisPipeline:
             data_source=data_source,
             fallback_reason=fallback_reason,
         )
+
+        if self.persist:
+            self._record_ledger(result)
+        return result
+
+    def _record_ledger(self, result: AnalysisResult) -> None:
+        """决策台账留痕（做账）：每次成功分析 append-only 追加一条系统建议。
+
+        写失败只告警不阻断 —— 分析本身已成功；但该次分析在台账中缺席，
+        导出做账文档时即可见（审计上"缺行"比"错行"更容易被发现）。
+        --no-persist 时不落任何库，自然也不留痕。
+        """
+        try:
+            self.ledger.record_analysis(result)
+        except Exception as exc:  # noqa: BLE001 —— 台账属审计旁路，不因存储问题打断分析
+            warnings.warn(f"决策台账写入失败（本次分析未留痕）: {exc}")
 
     def _read_cache(self, entry: MarketEntry, sym: SymbolEntry, start_date: date, end_date: date) -> pd.DataFrame:
         """从本地 DuckDB 读K线（缓存回退 / 离线模式）。库中无数据返回空表。"""

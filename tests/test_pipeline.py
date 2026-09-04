@@ -88,6 +88,8 @@ def test_pipeline_end_to_end_offline(tmp_path):
     assert "机会 Opportunity" in report and "风险 Risk" in report
     assert result.action in report
     assert "py_dummy_v1" in report  # 哑模型因子可追溯
+    assert "## 结论" in report  # 结论先行：规则模板摘要段
+    assert "触发原因" in report  # 触发明细表
 
     path = pipeline.write_report(result)
     assert path.exists() and path.read_text(encoding="utf-8").startswith("# Meridian")
