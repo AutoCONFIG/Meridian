@@ -11,6 +11,8 @@ markets:
         name: 宁德时代
       - symbol: "600547"
         name: 山东黄金
+      - symbol: "002475"
+        name: 立讯精密
   - market: hk
     asset_type: stock
     frequency: daily
