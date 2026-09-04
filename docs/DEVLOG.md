@@ -10,9 +10,17 @@
 - **最新提交**：见 `git log`；本节随每次提交更新
 - **测试基线**：Rust 81（core 27 + indicators 21 + quant_engine 21 + storage 12）+ Python 62，全绿
 - **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0 / 601318 / 300059（日K到 2026-09-03）
-- **当前阶段**：Phase 0 完成；报告可读性改造进行中（A 触发明细 ✅、B 结论先行 ✅），之后进 Phase 1（regime 真实逻辑）
+- **当前阶段**：Phase 0 完成；报告可读性改造进行中（A 触发明细 ✅、B 结论先行 ✅、C K线图 ✅），之后进 Phase 1（regime 真实逻辑）
 
 ## 时间线
+
+### 2026-09-04 · 报告改造 C：K线配图
+
+- 新增 `python/meridian/orchestrator/chart.py`：上面板红涨绿跌蜡烛 + MA20/MA60 + BOLL(20,2) 带，下面板成交量（同蜡烛色）；中文字体回退链（Windows 实测选中 Microsoft YaHei，`axes.unicode_minus=False`）。**纯展示层**：指标 pandas 现算现画，不碰评分链路（红线 5 不受影响）。
+- `AnalysisResult` 挂 `df` 字段（`repr=False`，展示用）；`write_report` 渲染 `reports/charts/<symbol>_<date>.png` 并在报告 meta 后、结论前插入 `![...](charts/...)` 相对引用；**画图失败只告警，降级为无图报告**（图是增强项不挡分析落盘）。
+- requirements.txt 加 matplotlib>=3.8（venv 已装 3.11.1）。
+- 验证：pytest 63 全绿（新增 `test_write_report_embeds_kline_chart`：PNG 落盘>10KB、md 引用、df 未挂载时降级无图）；002475 重生成目检——报告结构 meta→图→结论→评分，像素统计红/绿蜡烛+成交量柱与 MA20/MA60 线均存在。注：judge/主模型图像输入不可用，图质量以程序化验证（颜色分布+字体）代替。
+- **并发提示**：另一会话同期在做 Python 层 LedgerBook 门面 + CLI（`python/meridian/ledger.py`、`tests/test_ledger.py` 未提交 WIP），本会话提交时严格只含自己文件，未卷入对方改动。
 
 ### 2026-09-04 · 报告改造 B：结论先行的规则模板摘要段
 
@@ -86,7 +94,7 @@ NO_PROXY="*" .venv/Scripts/python scripts/probe_data_sources.py  # 数据渠道�
 
 ## 下一步（按 PLAN.md 路线）
 
-- [ ] 报告可读性改造：~~保留模型内部触发明细渲染~~ ✅、~~结论先行摘要~~ ✅、K线图（进行中）
+- [ ] 报告可读性改造：~~触发明细~~ ✅、~~结论先行摘要~~ ✅、~~K线图~~ ✅（三项完成）
 - [ ] Phase 1：RegimeDetector 真实逻辑（替换 NullDetector 恒 unknown）、regime_history
 - [ ] Phase 2：回测引擎 + LLM Summary Agent
 - [ ] Phase 3+：组合管理、基本面、AI 预测模型、Research Agents、FastAPI Web + Tauri

@@ -71,6 +71,7 @@ class AnalysisResult:
     score: dict
     data_source: str = "live"  # live=数据源拉取 / cache=本地缓存回退
     fallback_reason: str | None = None  # 回退原因（数据源失败详情 / 离线模式）
+    df: pd.DataFrame | None = None  # 原始K线（画图用；展示层非评分链路）
 
     # ---- 视图便捷属性 ----
     @property
@@ -86,7 +87,7 @@ class AnalysisResult:
         return str(self.score["action"]["action"])
 
     # ---- Markdown 渲染 ----
-    def to_markdown(self, generated_at: datetime | None = None) -> str:
+    def to_markdown(self, generated_at: datetime | None = None, chart_image: str | None = None) -> str:
         ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         action = self.score["action"]
         lines = [
@@ -100,6 +101,8 @@ class AnalysisResult:
             f"- 市场状态（regime）：{self.regime}",
             "",
         ]
+        if chart_image:
+            lines += [f"![{self.name} ({self.symbol}) K线图]({chart_image})", ""]
         lines += self._summary_lines()
         lines += [
             "## 三层评分",
@@ -379,6 +382,7 @@ class AnalysisPipeline:
             score=score,
             data_source=data_source,
             fallback_reason=fallback_reason,
+            df=df,
         )
 
         if self.persist:
@@ -441,5 +445,23 @@ class AnalysisPipeline:
         out_dir = self.app.report_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         path = Path(output) if output else out_dir / f"{result.symbol}_{date.today().isoformat()}.md"
-        path.write_text(result.to_markdown(), encoding="utf-8")
+        chart_rel = self._render_chart(result, out_dir)
+        path.write_text(result.to_markdown(chart_image=chart_rel), encoding="utf-8")
         return path
+
+    def _render_chart(self, result: AnalysisResult, out_dir: Path) -> str | None:
+        """K线配图 → reports/charts/<symbol>_<date>.png，返回相对报告目录的引用。
+
+        画图失败只告警降级为无图报告（图是增强项，不该挡分析产物落盘）。
+        """
+        if result.df is None or result.df.empty:
+            return None
+        try:
+            from meridian.orchestrator.chart import plot_daily_chart
+
+            out = out_dir / "charts" / f"{result.symbol}_{date.today().isoformat()}.png"
+            plot_daily_chart(result.df, result.symbol, result.name, out)
+            return f"charts/{out.name}"
+        except Exception as exc:  # noqa: BLE001 —— 配图属增强项，失败不阻断报告
+            warnings.warn(f"K线图生成失败（报告降级为无图）: {exc}")
+            return None

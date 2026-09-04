@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from conftest import ROOT, CsvSource, DummyModel
@@ -93,6 +95,25 @@ def test_pipeline_end_to_end_offline(tmp_path):
 
     path = pipeline.write_report(result)
     assert path.exists() and path.read_text(encoding="utf-8").startswith("# Meridian")
+    assert result.df is not None and len(result.df) == result.bar_count
+
+
+def test_write_report_embeds_kline_chart(tmp_path):
+    """write_report 生成 K线配图并在 markdown 里引用（相对路径 charts/）。"""
+    pipeline = make_pipeline(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+
+    path = pipeline.write_report(result)
+    text = path.read_text(encoding="utf-8")
+
+    assert re.search(r"!\[.*\]\(charts/600519_\d{4}-\d{2}-\d{2}\.png\)", text), "报告应引用K线图"
+    chart = path.parent / "charts" / text.split("](charts/")[1].split(")")[0]
+    assert chart.exists() and chart.stat().st_size > 10_000, "PNG 应真实落盘且非空"
+
+    # df 未挂载时降级为无图，不报错
+    result.df = None
+    path2 = pipeline.write_report(result)
+    assert "charts/" not in path2.read_text(encoding="utf-8")
 
 
 def test_pipeline_adhoc_symbol_out_of_universe(tmp_path):
