@@ -286,6 +286,20 @@ impl PyDb {
             .collect::<PyResult<Vec<_>>>()?)
     }
 
+    /// 某标的最新K线日期（增量同步游标），无数据返回 None。
+    #[pyo3(signature = (symbol, market, frequency))]
+    fn latest_bar_date(&self, symbol: &str, market: &str, frequency: &str) -> PyResult<Option<String>> {
+        let m = parse_market(market)?;
+        let freq = parse_frequency(frequency)?;
+        let latest = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .latest_bar_date(m.as_str(), symbol, freq.as_str())
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(latest.map(|d| d.format("%Y-%m-%d").to_string()))
+    }
+
     /// 某标的K线行数（测试/巡检用）。
     #[pyo3(signature = (symbol, market, frequency))]
     fn bar_count(&self, symbol: &str, market: &str, frequency: &str) -> PyResult<i64> {

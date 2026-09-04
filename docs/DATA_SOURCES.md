@@ -1,4 +1,4 @@
-# 数据源调研与接口实测报告（股票 / 期货）
+# 数据源调研与接口实测报告（A股 / 期货 / 港美股）
 
 > 实测日期：2026-09-03（周四，盘中）。环境：Windows + 系统代理（所有请求必须绕过代理，见 §5）。
 > 复现方式：`.venv/Scripts/python scripts/probe_data_sources.py`，全部通道一次体检。
@@ -18,6 +18,11 @@ Meridian 需要的股票/期货数据**不需要从零逆向**——关键接口
 | 期货分钟K | akshare `futures_zh_minute_sina`（新浪源） | — | ✅（带持仓量） |
 | 期货实时快照（商品） | 东财 push2（secid=113.rbm 等） | 新浪 `nf_` | ✅ |
 | 期货实时快照（股指/全品种兜底） | 新浪 `nf_IF0` 等 | — | ✅（东财不覆盖中金所） |
+| 港股历史日K | 腾讯 `ifzq` fqkline（hk00700，前复权） | 东财 push2his（连接不稳，适配器保留） | ✅ |
+| 美股历史日K | 腾讯 `ifzq` fqkline（usAAPL.OQ，smartbox 解析后缀） | 东财 push2his（searchapi 解析 QuoteID） | ✅ |
+| 港股实时快照 | 新浪 `rt_hk` + 腾讯 `qt`（双源对账） | — | ✅ |
+| 美股实时快照 | 新浪 `gb_` | 腾讯 qt（实测返回 none_match） | ✅ |
+| 增量落库同步 | `latest_bar_date` 游标 + UPSERT（§7） | — | ✅ |
 | 期货 tick 推送 | CTP MdApi（官方 SDK，非逆向） | — | 未实施（需仿真账号） |
 | Level-2 逐笔委托 | — | — | ❌ 付费墙，免费无解 |
 | 外盘期货 | — | — | ❌ 需专门源，另行调研 |
@@ -101,6 +106,37 @@ ak.futures_zh_minute_sina(symbol="RB0", period="1")   # period: 1/5/15/30/60
 `openctp-tts` 或 vnpy 封装）。仿真环境：SimNow（上期技术官方，需注册）或 openctp 7×24 仿真。
 0.5 秒级 tick 推送，覆盖含中金所。前置地址以官方公告为准（会变动）。
 
+### 2.7 港股 / 美股（腾讯 ifzq + 新浪 hq，实测 2026-09-03）
+
+**腾讯历史日K** `ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},day,{start},{end},640,qfq`
+
+- code：港股 `hk00700`；美股需带交易所后缀（`AAPL` → `usAAPL.OQ`），经
+  `smartbox.gtimg.cn/s3/?v=2&q=AAPL&t=all` 搜索解析（`v_hint` 条目形如 `us~aapl.oq~名称~pg~GP`，
+  取点号前精确匹配），进程内 lru_cache。
+- **行序是 日期,开,收,高,低,量**（收盘在第三位，与东财"开,收,高,低"同款坑！）；
+  港股行尾可附分红元数据 dict，解析须忽略额外元素。
+- 无成交额字段 → amount=NaN（Rust Bar::validate 允许 NaN）；单次上限 640 根。
+- 前复权最新 bar 收盘 = 现价（对账依据，probe 已验）。
+
+**腾讯实时快照** `qt.gtimg.cn/q=hk00700`：与 A股同一布局（f3 最新 / f4 昨收 / f5 今开 /
+f33 高 / f34 低 / f36 量(股) / f37 额；A 股 f35 是"价/量/额"斜杠结构，港股无）。
+美股 `qt.gtimg.cn` 实测返回 none_match —— 美股快照只有新浪一条路。
+
+**新浪港股快照** `hq.sinajs.cn/list=rt_hk00700`（GBK）：
+`0英文名,1中文名,2开,3昨收,4高,5低,6最新,7涨跌,8涨跌幅,9买一,10卖一,11成交额(港元),12成交量(股),13市盈率?,...,17日期,18时间`
+（字段位经自洽验证：涨跌=最新-昨收、额/量≈当日均价且落在高低区间内。⚠ 11/12 才是额/量，
+12/13 错位会把成交量当成交额、把市盈率当成交量）。
+
+**新浪美股快照** `hq.sinajs.cn/list=gb_aapl`（GBK）：
+`0名称,1最新,2涨跌幅%,3北京时间,4涨跌额,5开,6高,7低,8/9 52周高/低,10成交量(股),...,26昨收,27成交笔数,...`
+（昨收在 **26** 位，27 是成交笔数——与涨跌幅字段自洽验证；成交额无可靠字段 → NaN）。
+
+### 2.8 东财港/美股（适配器保留，默认链未启用）
+
+push2his 港股 `secid=116.00700`；美股交易所未知 → `searchapi.eastmoney.com` 解析 QuoteID
+（`105.AAPL`）。当日实测对港/美频繁掐连（RemoteDisconnected，重试+镜像均不稳）——
+`EmGlobalDailySource` 保留，恢复后在 `config/data_sources.yaml` 加入链尾即可。
+
 ## 3. 工程 注意事项（实测踩坑记录）
 
 1. **系统代理**：本机系统代理会拦截东财并导致 TLS 中断（`schannel: server closed abruptly` /
@@ -117,6 +153,9 @@ ak.futures_zh_minute_sina(symbol="RB0", period="1")   # period: 1/5/15/30/60
 
 ## 4. Meridian 落地建议（后续 Phase 实施）
 
+> 状态更新：下列 realtime / minute / tdx / 港美股适配层与增量同步已全部落地
+> （`python/meridian/data/`，离线测试见 `tests/`），本节保留原文备查。
+
 - `python/meridian/data/` 扩展（全部走 `DataSource` 抽象 + `with_retry`）：
   - `realtime.py`：`SinaRealtimeSource`（A股+期货快照，明文）+ `EastmoneyRealtimeSource`（辅助/交叉校验）；
   - `minute.py`：`EastmoneyMinuteSource`（A股分钟K）+ `SinaFuturesMinuteSource`（期货分钟K，含持仓量）；
@@ -126,3 +165,15 @@ ak.futures_zh_minute_sina(symbol="RB0", period="1")   # period: 1/5/15/30/60
   （A股 open_interest 置空）；期货 bar schema 在 `BAR_COLUMNS` 基础上加 `open_interest`（A股置空）。
 - `config/data_sources.yaml` 增加 `sina_realtime` / `eastmoney` / `tdx` 条目，继承 retry 配置。
 - Python venv 缺 `pip`（uv 管理），装包用 `uv pip install <pkg> -p .venv/Scripts/python.exe`。
+
+## 7. 增量落库同步（data/sync.py）
+
+数据不落库就不能每次全量拉取。设计要点：
+
+- **游标** = 库内 `max(date)`（`PyDb.latest_bar_date`，Rust 单行查询，按 market+symbol+frequency 隔离）；
+- **无游标 / full=True** → 全量窗口（默认 800 自然日）；**有游标** → 增量 `[latest - overlap, end]`
+  （overlap 默认 5 日），UPSERT（`ON CONFLICT DO UPDATE`）吸收重叠窗口内的盘后修正与复权微调；
+- **前复权整体基准漂移**（分红除权致全历史平移）无法靠增量吸收 → 周期性 `full=True` 重拉
+  （数百根，成本可忽略）；
+- 全量拉空 = 明确报错；增量拉空 = 0 根报告（非交易日/夜间常态，不算失败）；
+- 源失败由管线自动回退本地库（报告标注 `data_source=cache` + 原因），不静默。

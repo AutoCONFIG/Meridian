@@ -24,3 +24,6 @@ python/meridian/*.pdb
 
 # ZCode 客户端本地状态
 .mimosa/
+
+# ZCode 客户端本地状态
+.omo/

@@ -118,6 +118,28 @@ impl MeridianDb {
         .collect()
     }
 
+    /// 某标的最新K线日期（增量同步游标）；无数据返回 None。
+    pub fn latest_bar_date(
+        &self,
+        market: &str,
+        symbol: &str,
+        frequency: &str,
+    ) -> Result<Option<NaiveDate>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT max(date) FROM bars WHERE market = ?1 AND symbol = ?2 AND frequency = ?3")
+            .map_err(|e| MeridianError::Storage(format!("查询最新日期失败: {e}")))?;
+        let mut rows = stmt
+            .query_map(params![market, symbol, frequency], |row| {
+                row.get::<_, Option<NaiveDate>>(0)
+            })
+            .map_err(|e| MeridianError::Storage(format!("查询最新日期失败: {e}")))?;
+        match rows.next() {
+            None => Ok(None),
+            Some(row) => row.map_err(|e| MeridianError::Storage(format!("读取最新日期失败: {e}"))),
+        }
+    }
+
     /// 写入三层评分（UPSERT：同 market+symbol+date 覆盖）。
     pub fn insert_composite_score(
         &self,
@@ -354,6 +376,21 @@ action_rules:
             .len(),
             0
         );
+    }
+
+    #[test]
+    fn latest_bar_date_tracks_cursor() {
+        let db = MeridianDb::open_in_memory().unwrap();
+        let a = asset();
+        assert_eq!(db.latest_bar_date("cn", "600519", "daily").unwrap(), None);
+
+        db.insert_bars(&a, &bars(5)).unwrap();
+        let latest = db.latest_bar_date("cn", "600519", "daily").unwrap();
+        assert_eq!(latest, Some(bars(5).last().unwrap().date));
+
+        // 其他市场/频率隔离
+        assert_eq!(db.latest_bar_date("hk", "600519", "daily").unwrap(), None);
+        assert_eq!(db.latest_bar_date("cn", "600519", "minute").unwrap(), None);
     }
 
     #[test]

@@ -1,0 +1,23 @@
+# 期货类三层评分配置（规则模型与股票同构，权重独立可调）（config/scoring/{asset_type}.yaml 之 stock）。
+# 修改本文件会改变 config_fingerprint（sha256 前16位，随每条评分落库，可追溯）。
+model_version: "rule-v0.1"
+
+weights:
+  opportunity:
+    default: { trend_model: 0.40, momentum_model: 0.30, capital_model: 0.30 }
+    by_regime:
+      Bear: { trend_model: 0.30, momentum_model: 0.20, capital_model: 0.50 }  # P1 起 regime 检测生效
+  risk:
+    default: { risk_model: 1.0 }
+
+action_rules:                       # (机会,风险)→建议，按序匹配，首条命中即生效
+  - if: { opportunity_gte: 75, risk_lte: 40 }
+    then: Add
+  - if: { opportunity_gte: 50 }
+    then: Hold
+  - if: { opportunity_gte: 35 }
+    then: Watch
+  - default: Avoid
+
+# 未在权重表登记的模型（如 Python 哑模型）使用的默认权重，保证其贡献可见
+unknown_model_weight: 0.2

@@ -115,10 +115,15 @@ class RetryConfig:
 
 @dataclass(frozen=True)
 class DataSourceConfig:
-    """config/data_sources.yaml：数据源与重试策略。"""
+    """config/data_sources.yaml：数据源、重试策略与多源链配置。"""
 
     default: str
     sources: dict
+    extra: dict = field(default_factory=dict)  # 其余顶层节（daily/realtime/minute 等）
+
+    def section(self, name: str) -> dict:
+        """取顶层配置节（如 daily / realtime / minute），缺省空映射。"""
+        return dict(self.extra.get(name, {}) or {})
 
     def retry_for(self, name: str) -> RetryConfig:
         src = self.sources.get(name, {})
@@ -132,4 +137,8 @@ class DataSourceConfig:
     def load(cls, root: Path | None = None) -> "DataSourceConfig":
         root = root or _project_root()
         raw = _load_yaml(root / "config" / "data_sources.yaml")
-        return cls(default=str(raw.get("default", "akshare")), sources=dict(raw.get("sources", {})))
+        return cls(
+            default=str(raw.get("default", "akshare")),
+            sources=dict(raw.get("sources", {})),
+            extra={k: v for k, v in raw.items() if k not in ("default", "sources")},
+        )

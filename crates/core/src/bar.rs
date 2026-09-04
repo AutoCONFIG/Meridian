@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{MeridianError, Result};
 
 /// 单根K线。`volume` 单位为股/份，`amount` 单位为元。
+/// `amount` 允许 NaN：部分数据源（腾讯日K/期货）无成交额字段，宁缺毋错；
+/// 价格与 volume 仍要求有限（下游指标与模型依赖）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Bar {
     pub date: NaiveDate,
@@ -55,11 +57,9 @@ impl Bar {
                 self.date, self.open, self.high, self.low, self.close
             )));
         }
-        if !self.volume.is_finite()
-            || self.volume < 0.0
-            || !self.amount.is_finite()
-            || self.amount < 0.0
-        {
+        // amount: NaN = 缺失（部分源无成交额字段），±inf 仍视为非法
+        let amount_ok = self.amount.is_nan() || (self.amount.is_finite() && self.amount >= 0.0);
+        if !self.volume.is_finite() || self.volume < 0.0 || !amount_ok {
             return Err(MeridianError::InvalidBar(format!(
                 "{} 成交量/成交额非法: volume={} amount={}",
                 self.date, self.volume, self.amount
@@ -111,6 +111,16 @@ mod tests {
         assert!(Bar::new(d(2024, 1, 2), 0.0, 11.0, 9.5, 10.0, 1.0, 1.0).is_err());
         assert!(Bar::new(d(2024, 1, 2), 10.0, 11.0, 9.5, 10.0, -1.0, 1.0).is_err());
         assert!(Bar::new(d(2024, 1, 2), 10.0, 11.0, 9.5, 10.0, 1.0, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn nan_amount_allowed_inf_rejected() {
+        // 期货主连等无成交额源 → NaN 合法
+        let bar = Bar::new(d(2024, 1, 2), 10.0, 11.0, 9.5, 10.5, 1.0, f64::NAN).unwrap();
+        assert!(bar.amount.is_nan());
+        // ±inf 仍非法（第 114 行既有断言依赖此行为）
+        assert!(Bar::new(d(2024, 1, 2), 10.0, 11.0, 9.5, 10.5, 1.0, f64::INFINITY).is_err());
+        assert!(Bar::new(d(2024, 1, 2), 10.0, 11.0, 9.5, 10.5, 1.0, f64::NEG_INFINITY).is_err());
     }
 
     #[test]

@@ -49,6 +49,8 @@ pub enum AssetType {
     Fund,
     Gold,
     Commodity,
+    /// 期货（商品/金融期货合约与主力连续）
+    Futures,
 }
 
 impl AssetType {
@@ -60,6 +62,7 @@ impl AssetType {
             AssetType::Fund => "fund",
             AssetType::Gold => "gold",
             AssetType::Commodity => "commodity",
+            AssetType::Futures => "futures",
         }
     }
 
@@ -80,6 +83,7 @@ impl FromStr for AssetType {
             "fund" => Ok(AssetType::Fund),
             "gold" => Ok(AssetType::Gold),
             "commodity" => Ok(AssetType::Commodity),
+            "futures" | "future" => Ok(AssetType::Futures),
             other => Err(MeridianError::Data(format!("未知资产类型: {other}"))),
         }
     }

@@ -1,11 +1,81 @@
-# 数据源配置。Phase 0 仅 A 股（akshare）；us/hk/commodity/fund 为 Phase 1。
+# 数据源配置。
+# 原则：源链 / 重试 / 对账开关只在此调整，代码零硬编码。
+# 渠道实测结论见 docs/DATA_SOURCES.md（2026-09-03 探测）。
 default: akshare
 
 sources:
   akshare:
-    module: meridian.data.cn_stock   # 实现类所在模块（DataSource 适配层）
+    module: meridian.data.cn_stock          # A股日K·前复权（东财源）
     retry:
       max_attempts: 3
       backoff_seconds: 2.0
     timeout_seconds: 30
-    # akshare 接口常变，参数集中在 python/meridian/data/cn_stock.py 适配层内
+  tencent:
+    module: meridian.data.cn_stock_tencent  # A股日K·前复权（第二历史源/对账）
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2.0
+  eastmoney:
+    module: meridian.data.realtime          # A股实时快照（push2）
+    retry:
+      max_attempts: 3
+      backoff_seconds: 1.0
+  eastmoney_futures:
+    module: meridian.data.realtime          # 商品期货快照（中金所无数据）
+    retry:
+      max_attempts: 2
+      backoff_seconds: 1.0
+  tdx:
+    module: meridian.data.tdx               # 通达信协议：五档/分笔/未复权日K
+    retry:
+      max_attempts: 2
+      backoff_seconds: 1.0
+    # 服务器时效性强：连不上按序换台；以下为 2026-09-03 实测可用
+    servers:
+      - "115.238.90.165:7709"
+      - "218.75.126.9:7709"
+      - "60.12.136.250:7709"
+      - "115.238.56.198:7709"
+      - "180.153.18.170:7709"
+      - "110.41.147.114:7709"
+      - "122.51.120.217:7709"
+
+# ---- 多源链：按序 failover；cross_check 开启跨源对账 ----
+
+daily:
+  cn_stock:
+    chain: [akshare, tencent]   # 主源东财，腾讯对账/failover
+    cross_check: true
+    tolerance_pct: 0.01         # 最新收盘价相对偏差上限
+  hk_stock:
+    chain: [tencent_global]     # 东财恢复后在链尾加 eastmoney_global
+    cross_check: false
+  us_stock:
+    chain: [tencent_global]
+    cross_check: false
+  futures:
+    chain: [akshare_futures]    # 主连滞后一天（当日看快照/分钟线）；东财恢复后可加
+
+realtime:
+  cn_stock:
+    chain: [sina, tencent, eastmoney]
+    cross_check: true
+    tolerance_pct: 0.005
+  futures:
+    chain: [sina, eastmoney_futures]  # 东财仅商品期货；中金所由新浪覆盖
+    cross_check: false                # 东财期货偶发限流，对账默认关
+    tolerance_pct: 0.005
+  hk_stock:
+    chain: [sina_hk, tencent_hk]
+    cross_check: true
+    tolerance_pct: 0.005
+  us_stock:
+    chain: [sina_us]            # 腾讯美股快照无数据（qt.gtimg.cn 返回 none_match）
+    cross_check: false
+    tolerance_pct: 0.005
+
+minute:
+  cn_stock:
+    chain: [eastmoney_minute, tencent_minute]
+  futures:
+    chain: [sina_futures_minute]

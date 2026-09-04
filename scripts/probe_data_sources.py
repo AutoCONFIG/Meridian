@@ -30,6 +30,7 @@ _EM_HEADERS = {
     ),
 }
 _SINA_HEADERS = {"Referer": "https://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"}
+_TX_HEADERS = {"Referer": "https://gu.qq.com/", "User-Agent": "Mozilla/5.0"}
 _NO_PROXY = {"http": None, "https": None}
 
 # SSRF 防护：本脚本所有请求 URL 均为下方检查项中的硬编码行情源，
@@ -41,6 +42,8 @@ _ALLOWED_HOSTS = {
     "push2.eastmoney.com",
     "1.push2.eastmoney.com",
     "hq.sinajs.cn",
+    "qt.gtimg.cn",
+    "ifzq.gtimg.cn",
 }
 
 
@@ -181,6 +184,54 @@ def _sina_commodity(em_price: float) -> str:
         f"东财({em_price}) 与新浪({last}) 偏差过大"
     )
     return f"{f[0]} 最新{last} (东财 {em_price}, 对账一致)"
+
+
+# ---------------- 港/美（新浪 + 腾讯） ----------------
+
+
+@check("港股快照双源对账（新浪 rt_hk + 腾讯 qt，<0.5%）")
+def _hk_snapshot() -> str:
+    from meridian.data.realtime import parse_sina_hk_quotes, parse_tencent_quotes
+
+    sina = parse_sina_hk_quotes(_http_text(
+        "https://hq.sinajs.cn/list=rt_hk00700", _SINA_HEADERS))["00700"]
+    tx = parse_tencent_quotes(_http_text(
+        "https://qt.gtimg.cn/q=hk00700", _TX_HEADERS))["00700"]
+    dev = abs(sina["last"] - tx["last"]) / tx["last"]
+    assert dev < 0.005, f"新浪({sina['last']}) 与腾讯({tx['last']}) 偏差 {dev:.4%}"
+    # 字段位自洽（实测依据）：额/量 = 当日均价，须落在当日高低价附近
+    vwap = sina["amount"] / sina["volume"]
+    assert sina["low"] * 0.9 <= vwap <= sina["high"] * 1.1, f"港股量额不自洽: vwap={vwap}"
+    return f"00700 {sina['name']} 最新{sina['last']} (双源对账一致, vwap≈{vwap:.2f})"
+
+
+@check("新浪 美股快照 (gb_aapl) — 昨收与涨跌幅自洽")
+def _sina_us() -> str:
+    from meridian.data.realtime import parse_sina_us_quotes
+
+    r = parse_sina_us_quotes(
+        _http_text("https://hq.sinajs.cn/list=gb_aapl", _SINA_HEADERS))["AAPL"]
+    chg = r["last"] / r["pre_close"] - 1
+    assert abs(chg) < 0.15, f"美股昨收字段疑似错位: 涨跌幅 {chg:.2%} 异常"
+    return f"AAPL 最新{r['last']} 昨收{r['pre_close']} 量{r['volume']:.0f}股"
+
+
+@check("腾讯 港股日K (ifzq fqkline 00700) — 最新收盘与快照对账")
+def _tx_hk_daily() -> str:
+    import json
+
+    from meridian.data.cn_stock_tencent import parse_fqkline
+    from meridian.data.realtime import parse_tencent_quotes
+
+    df = parse_fqkline(json.loads(_http_text(
+        "https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk00700,day,,,5,qfq",
+        _TX_HEADERS)), "hk00700")
+    last = df.iloc[-1]
+    snap = parse_tencent_quotes(_http_text(
+        "https://qt.gtimg.cn/q=hk00700", _TX_HEADERS))["00700"]
+    dev = abs(float(last["close"]) - snap["last"]) / snap["last"]
+    assert dev < 0.005, f"日K收盘({last['close']}) 与快照({snap['last']}) 偏差 {dev:.4%}"
+    return f"00700 日K最新 {last['date']} 收{last['close']}（前复权最新bar与现价一致）"
 
 
 # ---------------- akshare ----------------

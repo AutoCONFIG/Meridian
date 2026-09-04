@@ -37,6 +37,7 @@ ACTION_SENTENCE = {
 # 数据来源代码 → 报告展示文案
 DATA_SOURCE_LABEL = {
     "live": "数据源拉取",
+    "store": "本地库（增量同步）",
     "cache": "本地缓存（DuckDB）",
 }
 
@@ -137,25 +138,32 @@ class AnalysisPipeline:
         self._extra_models = list(extra_models)
         self._root = root or Path(__file__).resolve().parents[3]
         self._db: mc.PyDb | None = None
-        self._engine: mc.PyEngine | None = None
+        self._engines: dict[str, mc.PyEngine] = {}  # asset_type → 引擎
 
     # ---- 初始化懒加载 ----
     @staticmethod
     def _default_source(root: Path | None) -> DataSource:
-        from meridian.data.cn_stock import CnStockSource
+        from meridian.data.composite import build_cn_stock_daily
 
-        return CnStockSource(DataSourceConfig.load(root))
+        # 多源组合：akshare（东财）为主，腾讯 failover + 跨源对账
+        return build_cn_stock_daily(DataSourceConfig.load(root))
 
-    def engine(self) -> mc.PyEngine:
-        if self._engine is None:
-            # 资产类型 → scoring yaml（验收标准 7：加资产类型不改核心代码）
-            stock_entry = self.markets_cfg.markets[0]
-            yaml_path = self._root / "config" / "scoring" / stock_entry.scoring_config()
-            self._engine = mc.PyEngine(str(yaml_path))
-            self._engine.add_builtin_models()
+    def engine(self, asset_type: str | None = None) -> mc.PyEngine:
+        """资产类型 → scoring yaml 构建引擎（验收标准 7：加资产类型不改核心代码）。
+
+        港/美/期货各自的 scoring yaml 独立加载，避免用股票权重静默算分。
+        """
+        key = asset_type or self.markets_cfg.markets[0].asset_type
+        if key not in self._engines:
+            yaml_path = self._root / "config" / "scoring" / f"{key}.yaml"
+            if not yaml_path.exists():
+                raise ConfigError(f"缺少评分配置: {yaml_path}（asset_type={key}）")
+            engine = mc.PyEngine(str(yaml_path))
+            engine.add_builtin_models()
             for name, model, channel in self._extra_models:
-                self._engine.add_python_model(name, model, channel)
-        return self._engine
+                engine.add_python_model(name, model, channel)
+            self._engines[key] = engine
+        return self._engines[key]
 
     def db(self) -> mc.PyDb:
         if self._db is None:
@@ -176,45 +184,67 @@ class AnalysisPipeline:
         end_date = date.fromisoformat(end) if end else date.today() - timedelta(days=1)
         start_date = date.fromisoformat(start) if start else end_date - timedelta(days=240)
 
-        # 拉数：数据源失败或离线时回退本地缓存（上次成功拉取已入库的K线）
         df: pd.DataFrame = pd.DataFrame(columns=BAR_COLUMNS)
         fetch_error: DataError | None = None
-        if not offline:
+        data_source, fallback_reason = "live", None
+
+        if offline:
+            data_source = "cache"
+            df = self._read_cache(entry, sym, start_date, end_date)
+            if len(df):
+                fallback_reason = "离线模式（--offline）"
+        elif self.persist:
+            # 增量同步（库内最新日期为游标，只拉缺口）→ 从库读分析窗口；
+            # 同步失败回退本地库，明确标注，不静默。
             try:
-                df = self.source.fetch_daily(FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
+                self._sync_store(entry, sym, end_date)
+            except DataError as exc:
+                fetch_error = exc
+            df = self._read_cache(entry, sym, start_date, end_date)
+            if fetch_error is not None:
+                data_source = "cache"
+                fallback_reason = f"数据源拉取失败，自动回退: {fetch_error}"
+            else:
+                data_source = "store"
+                if len(df) < 30:
+                    # 库内窗口不足（如指定了更早的 start）→ 源补拉指定窗口
+                    try:
+                        live = self.source.fetch_daily(
+                            FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
+                        if not live.empty:
+                            self._insert_bars(entry, sym, live)
+                            df = self._read_cache(entry, sym, start_date, end_date)
+                    except DataError as exc2:
+                        fetch_error = fetch_error or exc2
+        else:
+            try:
+                df = self.source.fetch_daily(
+                    FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
             except DataError as exc:
                 fetch_error = exc
 
-        data_source = "live"
-        fallback_reason = None
-        cached_len = 0
-        if offline or df.empty or len(df) < 30:
+        # live 不足时本地缓存兜底（保持 Phase 0 语义：缓存更多就用缓存）
+        if len(df) < 30:
             cached = self._read_cache(entry, sym, start_date, end_date)
-            cached_len = len(cached)
-            if cached_len > len(df):
+            if len(cached) > len(df):
                 df = cached
                 data_source = "cache"
-                fallback_reason = "离线模式（--offline）" if offline else f"数据源拉取失败，自动回退: {fetch_error}"
+                fallback_reason = fallback_reason or (
+                    "离线模式（--offline）" if offline
+                    else f"数据源拉取失败，自动回退: {fetch_error}")
 
         if df.empty or len(df) < 30:
             origin = "离线模式下" if offline else "数据源与"
             raise DataError(
-                f"{symbol} 有效K线不足（{len(df)} 根，至少 30 根；本地缓存 {cached_len} 根）。"
+                f"{symbol} 有效K线不足（{len(df)} 根，至少 30 根；本地缓存 {len(df)} 根）。"
                 f"{origin}本地缓存均无可用数据"
                 + (f"；数据源错误: {fetch_error}" if fetch_error else "")
             )
 
         if self.persist and data_source == "live":
-            self.db().insert_bars(
-                symbol=sym.symbol, name=sym.name, market=entry.market,
-                asset_type=entry.asset_type, frequency=entry.frequency,
-                dates=[d.isoformat() for d in df["date"]],
-                opens=df["open"].tolist(), highs=df["high"].tolist(),
-                lows=df["low"].tolist(), closes=df["close"].tolist(),
-                volumes=df["volume"].tolist(), amounts=df["amount"].tolist(),
-            )
+            self._insert_bars(entry, sym, df)
 
-        score = self.engine().evaluate(
+        score = self.engine(entry.asset_type).evaluate(
             symbol=sym.symbol, name=sym.name, market=entry.market,
             asset_type=entry.asset_type, frequency=entry.frequency,
             dates=[d.isoformat() for d in df["date"]],
@@ -254,6 +284,29 @@ class AnalysisPipeline:
         df = pd.DataFrame(rows)[BAR_COLUMNS]
         df["date"] = pd.to_datetime(df["date"]).dt.date  # read_bars 返回字符串日期，与 live 路径对齐
         return df.reset_index(drop=True)
+
+    def _sync_store(self, entry: MarketEntry, sym: SymbolEntry, end_date: date):
+        """增量同步：库内最新日期为游标，只拉缺口并 UPSERT（见 data/sync.py）。"""
+        from meridian.data.sync import DailySyncer
+
+        return DailySyncer(self.source, self.db()).sync(
+            symbol=sym.symbol, name=sym.name, market=entry.market,
+            asset_type=entry.asset_type, frequency=entry.frequency,
+            end=end_date.isoformat(),
+        )
+
+    def _insert_bars(self, entry: MarketEntry, sym: SymbolEntry, df: pd.DataFrame) -> int:
+        return self.db().insert_bars(
+            symbol=sym.symbol, name=sym.name, market=entry.market,
+            asset_type=entry.asset_type, frequency=entry.frequency,
+            dates=[d.isoformat() if hasattr(d, "isoformat") else str(d) for d in df["date"]],
+            opens=[float(v) for v in df["open"]],
+            highs=[float(v) for v in df["high"]],
+            lows=[float(v) for v in df["low"]],
+            closes=[float(v) for v in df["close"]],
+            volumes=[float(v) for v in df["volume"]],
+            amounts=[float(v) for v in df["amount"]],
+        )
 
     def write_report(self, result: AnalysisResult, output: str | Path | None = None) -> Path:
         out_dir = self.app.report_dir
