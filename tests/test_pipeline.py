@@ -172,3 +172,17 @@ def test_cache_dates_normalized_like_live(tmp_path):
     assert list(cache_df.columns) == BAR_COLUMNS
     assert str(cache_df["date"].iloc[0]) == "2026-01-05"
     assert cache_df["date"].is_monotonic_increasing
+
+
+def test_source_routing_by_market(tmp_path):
+    """管线按 (market, asset_type) 路由组合源：cn→A股链，hk/us→腾讯全球，futures→akshare期货。"""
+    pipeline = AnalysisPipeline(root=ROOT, persist=False)  # 不传 source → 走路由
+
+    assert pipeline._source_for(pipeline._resolve("600519")[0])._sources[0].name == "akshare"
+    assert pipeline._source_for(pipeline._resolve("00700")[0])._sources[0].name == "tencent_global"
+    assert pipeline._source_for(pipeline._resolve("AAPL")[0])._sources[0].name == "tencent_global"
+    assert pipeline._source_for(pipeline._resolve("RB0")[0])._sources[0].name == "akshare_futures"
+
+    # 显式源覆盖路由（测试注入数据源的既有语义）
+    pipeline.source = BrokenSource()
+    assert pipeline._source_for(pipeline._resolve("00700")[0]) is pipeline.source

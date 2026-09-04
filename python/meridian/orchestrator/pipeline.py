@@ -133,20 +133,50 @@ class AnalysisPipeline:
     ):
         self.app = AppConfig.load(root)
         self.markets_cfg = MarketsConfig.load(root)
-        self.source = source or self._default_source(root)
+        self._explicit_source = source
+        self._root = root or Path(__file__).resolve().parents[3]
         self.persist = persist
         self._extra_models = list(extra_models)
-        self._root = root or Path(__file__).resolve().parents[3]
         self._db: mc.PyDb | None = None
         self._engines: dict[str, mc.PyEngine] = {}  # asset_type → 引擎
+        self._sources: dict[tuple[str, str], DataSource] = {}  # (market, asset_type) → 组合源
 
     # ---- 初始化懒加载 ----
-    @staticmethod
-    def _default_source(root: Path | None) -> DataSource:
-        from meridian.data.composite import build_cn_stock_daily
+    @property
+    def source(self) -> DataSource:
+        """缺省数据源（A 股日K组合链）。显式传入/测试替换优先。"""
+        return self._source_for(None)
 
-        # 多源组合：akshare（东财）为主，腾讯 failover + 跨源对账
-        return build_cn_stock_daily(DataSourceConfig.load(root))
+    @source.setter
+    def source(self, value: DataSource) -> None:
+        self._explicit_source = value
+
+    def _source_for(self, entry: MarketEntry | None) -> DataSource:
+        """按标的 (market, asset_type) 路由组合源；显式 source 覆盖一切路由。"""
+        if self._explicit_source is not None:
+            return self._explicit_source
+        key = (entry.market if entry else "cn", entry.asset_type if entry else "stock")
+        if key not in self._sources:
+            self._sources[key] = self._build_source(*key)
+        return self._sources[key]
+
+    def _build_source(self, market: str, asset_type: str) -> DataSource:
+        """市场/资产类型 → 多源组合（链与对账参数来自 config/data_sources.yaml）。"""
+        from meridian.data.composite import (
+            build_cn_stock_daily,
+            build_futures_daily,
+            build_global_daily,
+        )
+
+        cfg = DataSourceConfig.load(self._root)
+        if asset_type == "futures":
+            return build_futures_daily(cfg)
+        if market == "hk":
+            return build_global_daily("hk", cfg)
+        if market == "us":
+            return build_global_daily("us", cfg)
+        # A股：akshare（东财）为主，腾讯 failover + 跨源对账
+        return build_cn_stock_daily(cfg)
 
     def engine(self, asset_type: str | None = None) -> mc.PyEngine:
         """资产类型 → scoring yaml 构建引擎（验收标准 7：加资产类型不改核心代码）。
@@ -209,7 +239,7 @@ class AnalysisPipeline:
                 if len(df) < 30:
                     # 库内窗口不足（如指定了更早的 start）→ 源补拉指定窗口
                     try:
-                        live = self.source.fetch_daily(
+                        live = self._source_for(entry).fetch_daily(
                             FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
                         if not live.empty:
                             self._insert_bars(entry, sym, live)
@@ -218,7 +248,7 @@ class AnalysisPipeline:
                         fetch_error = fetch_error or exc2
         else:
             try:
-                df = self.source.fetch_daily(
+                df = self._source_for(entry).fetch_daily(
                     FetchRequest(symbol, start_date.isoformat(), end_date.isoformat()))
             except DataError as exc:
                 fetch_error = exc
@@ -289,7 +319,7 @@ class AnalysisPipeline:
         """增量同步：库内最新日期为游标，只拉缺口并 UPSERT（见 data/sync.py）。"""
         from meridian.data.sync import DailySyncer
 
-        return DailySyncer(self.source, self.db()).sync(
+        return DailySyncer(self._source_for(entry), self.db()).sync(
             symbol=sym.symbol, name=sym.name, market=entry.market,
             asset_type=entry.asset_type, frequency=entry.frequency,
             end=end_date.isoformat(),
