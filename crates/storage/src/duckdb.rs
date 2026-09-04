@@ -297,6 +297,9 @@ impl MeridianDb {
     }
 
     /// 决策台账追加一行（append-only，审计语义：永不 UPSERT）。返回分配的行 id。
+    ///
+    /// 只存评分标量（opportunity / risk / action / triggers）—— 因子明细由
+    /// `insert_composite_score` 落 trend_scores，台账负责审计留痕不负责因子复现。
     #[allow(clippy::too_many_arguments)]
     pub fn insert_ledger_entry(
         &self,
@@ -308,7 +311,13 @@ impl MeridianDb {
         data_source: &str,
         fallback_reason: Option<&str>,
         regime: &str,
-        score: &CompositeScore,
+        opportunity: f64,
+        risk: f64,
+        action: &str,
+        position_hint: Option<f64>,
+        rule_triggers: &[String],
+        model_version: &str,
+        config_fingerprint: &str,
         report_path: Option<&str>,
     ) -> Result<i64> {
         let id: i64 = self
@@ -319,7 +328,7 @@ impl MeridianDb {
                 |r| r.get(0),
             )
             .map_err(|e| MeridianError::Storage(format!("分配台账 id 失败: {e}")))?;
-        let triggers = serde_json::to_string(&score.action.rule_triggers)
+        let triggers_json = serde_json::to_string(rule_triggers)
             .map_err(|e| MeridianError::Storage(format!("序列化 rule_triggers 失败: {e}")))?;
         self.conn
             .execute(
@@ -344,13 +353,13 @@ impl MeridianDb {
                     data_source,
                     fallback_reason,
                     regime,
-                    score.opportunity.score,
-                    score.risk.score,
-                    score.action.action.as_str(),
-                    score.action.position_hint,
-                    triggers,
-                    score.model_version,
-                    score.config_fingerprint,
+                    opportunity,
+                    risk,
+                    action,
+                    position_hint,
+                    triggers_json,
+                    model_version,
+                    config_fingerprint,
                     report_path,
                 ],
             )
@@ -656,11 +665,22 @@ action_rules:
         format!("2026-09-{day:02} {hms}")
     }
 
+    fn score_scalars(score: &CompositeScore) -> (f64, f64, &str, Option<f64>, Vec<String>) {
+        (
+            score.opportunity.score,
+            score.risk.score,
+            score.action.action.as_str(),
+            score.action.position_hint,
+            score.action.rule_triggers.clone(),
+        )
+    }
+
     #[test]
     fn ledger_insert_assigns_sequential_ids_and_query_reads_back() {
         let db = MeridianDb::open_in_memory().unwrap();
         let a = asset();
         let score = make_score();
+        let (opp, risk, action, hint, triggers) = score_scalars(&score);
 
         let id1 = db
             .insert_ledger_entry(
@@ -672,7 +692,8 @@ action_rules:
                 "live",
                 None,
                 "unknown",
-                &score,
+                opp, risk, action, hint, &triggers,
+                &score.model_version, &score.config_fingerprint,
                 Some("reports/600519_2026-09-03.md"),
             )
             .unwrap();
@@ -686,7 +707,8 @@ action_rules:
                 "cache",
                 Some("数据源拉取失败，自动回退: 模拟"),
                 "unknown",
-                &score,
+                opp, risk, action, hint, &triggers,
+                &score.model_version, &score.config_fingerprint,
                 None,
             )
             .unwrap();
@@ -715,6 +737,8 @@ action_rules:
     #[test]
     fn ledger_preserves_rule_triggers_json() {
         let db = MeridianDb::open_in_memory().unwrap();
+        let score = make_score();
+        let (opp, risk, action, hint, triggers) = score_scalars(&score);
         db.insert_ledger_entry(
             &ts_at(3, "10:00:00"),
             &asset(),
@@ -724,13 +748,14 @@ action_rules:
             "store",
             None,
             "unknown",
-            &make_score(),
+            opp, risk, action, hint, &triggers,
+            &score.model_version, &score.config_fingerprint,
             None,
         )
         .unwrap();
         let row = &db.query_ledger(None, None, 1).unwrap()[0];
-        let triggers: Vec<String> = serde_json::from_str(&row.rule_triggers).unwrap();
-        assert!(!triggers.is_empty());
+        let triggers_back: Vec<String> = serde_json::from_str(&row.rule_triggers).unwrap();
+        assert!(!triggers_back.is_empty());
         assert_eq!(row.config_fingerprint.len(), 16);
         assert_eq!(row.model_version, "rule-test");
     }

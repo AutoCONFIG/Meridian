@@ -316,4 +316,153 @@ impl PyDb {
             )
             .map_err(|e| PyValueError::new_err(format!("查询失败: {e}")))
     }
+
+    /// 决策台账追加一行（append-only，审计留痕）。返回台账 id。
+    #[pyo3(signature = (ts, symbol, name, market, asset_type, frequency,
+                        data_start, data_end, bar_count, data_source, regime,
+                        opportunity, risk, action, rule_triggers,
+                        model_version, config_fingerprint,
+                        fallback_reason=None, position_hint=None, report_path=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn record_ledger(
+        &self,
+        ts: &str,
+        symbol: &str,
+        name: &str,
+        market: &str,
+        asset_type: &str,
+        frequency: &str,
+        data_start: &str,
+        data_end: &str,
+        bar_count: i64,
+        data_source: &str,
+        regime: &str,
+        opportunity: f64,
+        risk: f64,
+        action: &str,
+        rule_triggers: Vec<String>,
+        model_version: &str,
+        config_fingerprint: &str,
+        fallback_reason: Option<&str>,
+        position_hint: Option<f64>,
+        report_path: Option<&str>,
+    ) -> PyResult<i64> {
+        let asset = asset_from_parts(symbol, name, market, asset_type, frequency)?;
+        let start = chrono::NaiveDate::parse_from_str(data_start, "%Y-%m-%d")
+            .map_err(|e| PyValueError::new_err(format!("data_start 日期非法: {e}")))?;
+        let end = chrono::NaiveDate::parse_from_str(data_end, "%Y-%m-%d")
+            .map_err(|e| PyValueError::new_err(format!("data_end 日期非法: {e}")))?;
+        let id = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .insert_ledger_entry(
+                ts, &asset, start, end, bar_count, data_source, fallback_reason, regime,
+                opportunity, risk, action, position_hint, &rule_triggers,
+                model_version, config_fingerprint, report_path,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(id)
+    }
+
+    /// 查询决策台账（按 id 倒序）→ list[dict]。market/symbol 传 None 表示不过滤。
+    #[pyo3(signature = (market=None, symbol=None, limit=200))]
+    fn ledger_entries(
+        &self,
+        market: Option<&str>,
+        symbol: Option<&str>,
+        limit: i64,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let rows = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .query_ledger(market, symbol, limit)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                pyo3::Python::attach(|py| {
+                    let d = pyo3::types::PyDict::new(py);
+                    d.set_item("id", r.id)?;
+                    d.set_item("ts", r.ts)?;
+                    d.set_item("symbol", r.symbol)?;
+                    d.set_item("name", r.name)?;
+                    d.set_item("market", r.market)?;
+                    d.set_item("asset_type", r.asset_type)?;
+                    d.set_item("frequency", r.frequency)?;
+                    d.set_item("data_start", r.data_start.format("%Y-%m-%d").to_string())?;
+                    d.set_item("data_end", r.data_end.format("%Y-%m-%d").to_string())?;
+                    d.set_item("bar_count", r.bar_count)?;
+                    d.set_item("data_source", r.data_source)?;
+                    d.set_item("fallback_reason", r.fallback_reason)?;
+                    d.set_item("regime", r.regime)?;
+                    d.set_item("opportunity", r.opportunity)?;
+                    d.set_item("risk", r.risk)?;
+                    d.set_item("action", r.action)?;
+                    d.set_item("position_hint", r.position_hint)?;
+                    d.set_item("rule_triggers", r.rule_triggers)?;
+                    d.set_item("model_version", r.model_version)?;
+                    d.set_item("config_fingerprint", r.config_fingerprint)?;
+                    d.set_item("report_path", r.report_path)?;
+                    Ok(d.into_any().unbind())
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?)
+    }
+
+    /// 人工决策/成交日志追加一行（append-only）。返回流水 id。
+    #[pyo3(signature = (ts, symbol, market, side, quantity=None, price=None,
+                        note=None, ledger_id=None))]
+    fn record_trade(
+        &self,
+        ts: &str,
+        symbol: &str,
+        market: &str,
+        side: &str,
+        quantity: Option<f64>,
+        price: Option<f64>,
+        note: Option<&str>,
+        ledger_id: Option<i64>,
+    ) -> PyResult<i64> {
+        self.db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .insert_trade_entry(ts, symbol, market, side, quantity, price, note, ledger_id)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    }
+
+    /// 查询人工决策/成交日志（按 id 倒序）→ list[dict]。market/symbol 传 None 表示不过滤。
+    #[pyo3(signature = (market=None, symbol=None, limit=200))]
+    fn trade_entries(
+        &self,
+        market: Option<&str>,
+        symbol: Option<&str>,
+        limit: i64,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let rows = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .query_trades(market, symbol, limit)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                pyo3::Python::attach(|py| {
+                    let d = pyo3::types::PyDict::new(py);
+                    d.set_item("id", r.id)?;
+                    d.set_item("ts", r.ts)?;
+                    d.set_item("symbol", r.symbol)?;
+                    d.set_item("market", r.market)?;
+                    d.set_item("side", r.side)?;
+                    d.set_item("quantity", r.quantity)?;
+                    d.set_item("price", r.price)?;
+                    d.set_item("note", r.note)?;
+                    d.set_item("ledger_id", r.ledger_id)?;
+                    Ok(d.into_any().unbind())
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?)
+    }
 }

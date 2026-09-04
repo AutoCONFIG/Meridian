@@ -8,5 +8,5 @@ mod duckdb;
 mod parquet;
 mod schema;
 
-pub use duckdb::MeridianDb;
+pub use duckdb::{LedgerRow, MeridianDb, TradeRow};
 pub use schema::SCHEMA_SQL;
