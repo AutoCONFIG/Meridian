@@ -202,6 +202,20 @@ def test_cache_dates_normalized_like_live(tmp_path):
     assert cache_df["date"].is_monotonic_increasing
 
 
+def test_report_renders_trigger_details(tmp_path):
+    """触发明细全链路透传："为什么"从 Rust 规则模型到 dict 再到报告。"""
+    pipeline = make_pipeline(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+
+    risk_details = result.score["risk"]["factors"][0]["details"]
+    assert risk_details, "risk_model 内部触发明细必须透传到 Python dict"
+    assert all("name" in d and "value" in d and "description" in d for d in risk_details)
+
+    report = result.to_markdown()
+    assert "触发原因" in report  # 渲染为独立明细表
+    assert any(d["name"] == "ATR占比" for d in risk_details)
+
+
 def test_source_routing_by_market(tmp_path):
     """管线按 (market, asset_type) 路由组合源：cn→A股链，hk/us→腾讯全球，futures→akshare期货。"""
     pipeline = AnalysisPipeline(root=ROOT, persist=False)  # 不传 source → 走路由

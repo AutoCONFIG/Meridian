@@ -119,6 +119,10 @@ fn factors_to_py(py: Python<'_>, factors: &[Factor]) -> PyResult<Py<PyAny>> {
         d.set_item("value", f.value)?;
         d.set_item("contribution", f.contribution)?;
         d.set_item("description", f.description.clone())?;
+        if !f.details.is_empty() {
+            // 模型内部触发明细（"为什么"），递归同构
+            d.set_item("details", factors_to_py(py, &f.details)?)?;
+        }
         list.append(d)?;
     }
     Ok(list.into_any().unbind())

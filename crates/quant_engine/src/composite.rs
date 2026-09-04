@@ -129,7 +129,7 @@ impl CompositeEngine {
         for o in outs {
             let share = o.output.score * o.weight / total_w;
             score += share;
-            factors.push(Factor::new(
+            let mut factor = Factor::new(
                 o.name.clone(),
                 o.output.score,
                 share,
@@ -144,7 +144,10 @@ impl CompositeEngine {
                         ""
                     }
                 ),
-            ));
+            );
+            // 保留模型内部触发明细（"为什么是这个分"），报告与落库可追溯
+            factor.details = o.output.factors.clone();
+            factors.push(factor);
         }
 
         ChannelScore {
@@ -267,6 +270,26 @@ action_rules:
         assert_eq!(out.model_version, "rule-test");
         assert_eq!(out.config_fingerprint, engine.config().fingerprint());
         assert_eq!(out.config_fingerprint.len(), 16);
+    }
+
+    #[test]
+    fn model_internal_factors_preserved_as_details() {
+        // "为什么"必须可追溯：综合层的每模型因子要挂上模型内部触发明细
+        let engine = engine();
+        let fixture = testutil::uptrend_fixture(130);
+        let out = engine.evaluate(&std_models(), &fixture.ctx()).unwrap();
+
+        let risk_f = &out.risk.factors[0];
+        assert_eq!(risk_f.name, "risk_model");
+        assert!(!risk_f.details.is_empty(), "risk_model 内部触发明细不得被综合层丢弃");
+        assert!(risk_f
+            .details
+            .iter()
+            .all(|d| !d.description.is_empty() && d.contribution.is_finite()));
+
+        for f in &out.opportunity.factors {
+            assert!(!f.details.is_empty(), "{} 触发明细丢失", f.name);
+        }
     }
 
     #[test]

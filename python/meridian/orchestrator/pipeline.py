@@ -106,6 +106,7 @@ class AnalysisResult:
                     f"| {f['name']} | {f['value']:.2f} | {f['contribution']:+.2f} | {f['description']} |"
                 )
             lines.append("")
+            lines += self._trigger_detail_lines(layer)
 
         lines += [
             "---",
@@ -115,6 +116,25 @@ class AnalysisResult:
             "",
         ]
         return "\n".join(lines)
+
+    def _trigger_detail_lines(self, layer: str) -> list[str]:
+        """模型内部触发明细（"为什么"）：综合层从模型输出保留的规则触发。"""
+        rows: list[str] = []
+        for f in self.score[layer]["factors"]:
+            for d in f.get("details", []):
+                rows.append(
+                    f"| {f['name']} | {d['name']} | {d['value']:.4g} | {d['contribution']:+.0f} | {d['description']} |"
+                )
+        if not rows:
+            return []
+        return [
+            f"### {layer}·触发原因",
+            "",
+            "| 模型 | 触发项 | 实际值 | 贡献 | 说明 |",
+            "| --- | --- | ---: | ---: | --- |",
+            *rows,
+            "",
+        ]
 
 
 class AnalysisPipeline:

@@ -45,6 +45,10 @@ pub struct Factor {
     pub contribution: f64,
     /// 人话解释
     pub description: String,
+    /// 内部触发明细：综合层把模型的规则触发挂在其因子上，
+    /// 报告借此回答"这个分数为什么"。直接产出的因子可为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<Factor>,
 }
 
 impl Factor {
@@ -59,6 +63,7 @@ impl Factor {
             value,
             contribution,
             description: description.into(),
+            details: Vec::new(),
         }
     }
 }
