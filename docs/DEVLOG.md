@@ -7,18 +7,18 @@
 ## 状态快照（每次提交后更新）
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
-- **最新提交**：`c8d0be9` 报告改造 C K线配图（2026-09-04）
-- **测试基线**：Rust 81（core 27 + indicators 21 + quant_engine 21 + storage 12）+ Python 63，全绿
+- **最新提交**：`bb47ed5` DEVLOG 重构（内含并行会话 ledger 功能一并入库，见日记 09-04）（2026-09-04）
+- **测试基线**：Rust 81（core 27 + indicators 21 + quant_engine 21 + storage 12）+ Python 74，全绿
 - **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0 / 601318 / 300059（日K到 2026-09-03）
-- **当前阶段**：Phase 0 完成，报告可读性改造三项全部完成；下一步 Phase 1（regime 检测真实逻辑）
-- **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（`python/meridian/ledger.py` / `tests/test_ledger.py` / `cli.py` / storage WIP，未提交）；各自提交时严格只含自己的文件
+- **当前阶段**：Phase 0 完成，报告可读性改造三项全部完成，决策台账 CLI 可用；下一步 Phase 1（regime 检测真实逻辑）
+- **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
 
 ## 当前阶段任务
 
 ### ✅ 已完成
 
 - [x] **Phase 0：工程骨架 + 核心量化闭环**（`89a25bf`，09-03）——Rust 六 crate、三层评分、DuckDB、pyo3 桥、四组配置 YAML
-- [x] **多渠道数据层**（`68e06e9`，09-04）——MultiDailySource failover、跨源对账、增量同步、港美/期货源
+- [x] **数据渠道实测 + 多渠道数据层**（`8e1e9d2`/`68e06e9`，09-03~09-04，sess_b6f551ca 会话）——13 渠道实测记录 DATA_SOURCES.md + probe 体检脚本；MultiDailySource failover、跨源对账、失败冷却、增量同步、港美/期货源、实时快照补强（详见日记 09-03/09-04 两节）
 - [x] **离线回退 + 市场路由 + 即兴分析**（`500d921`/`bee2212`/`af3eb86`）——缓存回退、按 (market, asset_type) 路由、标的池外自动识别
 - [x] **决策台账存储层**（`82b0cca`）——analysis_ledger / trade_journal 表（另一会话 WIP 由本会话收尾）
 - [x] **报告可读性改造**（`2330aaf`/`ddf6b0e`/`c8d0be9`）
@@ -26,9 +26,11 @@
   - [x] B：结论先行摘要段（机会方向一览 + 风险 Top 触发 + 综合一句话）
   - [x] C：K线 + MA20/MA60 + BOLL + 成交量配图嵌入报告
 
+- [x] **决策台账 Python 层**（`bb47ed5`，并行会话完成）——`LedgerBook` 门面 + CLI 台账命令 + `LEDGER.md` 使用文档；与 DEVLOG 重构同提交入库（见日记 09-04「bb47ed5 提交说明」），Rust 81 + Python 74 全绿
+
 ### 🔨 进行中（并行会话）
 
-- [ ] Python 层 `LedgerBook` 门面 + CLI 台账命令（查询/导出做账文档）——见日记 09-04「并行动态」
+- （当前无——并行会话的 ledger 功能已随 `bb47ed5` 收尾入库）
 
 ### 📋 待办（按 PLAN.md 路线）
 
@@ -43,19 +45,28 @@
 
 今天主线是**数据韧性 + 报告可读性**，从"能跑"推进到"能看懂"。
 
-- **多渠道数据层**（另一会话完成，`68e06e9`）：`MultiDailySource` 链式 failover + 跨源收盘价对账（>1% 判脏）+ `SourceHealth` 失败冷却；腾讯港美日K、akshare 期货；`DailySyncer` 增量同步（库内最新日期为游标）。期货独立 scoring yaml，不再错套股票权重。
+- **数据渠道实测收尾 + 多渠道数据层落地**（sess_b6f551ca 会话，`8e1e9d2` 于 09-03、`68e06e9` 于本日 10:48）：
+  - **渠道实测**：13 个数据渠道逐一实跑验证（东财K线/快照、新浪快照/期货K线、通达信 pytdx、CTP（本期未实施）、腾讯港美 ifzq、东财港美等），接口规范、字段位、踩坑全记入 `docs/DATA_SOURCES.md`；配套 `scripts/probe_data_sources.py` 渠道体检脚本（后经 Mimosa 拦截加了出口域名白名单）。
+  - **港/美/期货数据源**：新增 `data/global_stock.py`（腾讯 ifzq 港美日K + smartbox/searchapi 代码解析）、`data/futures.py`（akshare 期货主连/合约日K）；`realtime.py` 补新浪 rt_hk/gb_ 与腾讯港股快照，实测字段位（港股 成交额=f11/成交量=f12，美股 昨收=f26——报文自洽 + 双源交叉验证）。
+  - **增量落库同步**：`data/sync.py` `DailySyncer`——库内最新日期为游标只拉缺口，UPSERT 幂等；`PyDb.latest_bar_date`（Rust 新增）支撑游标。
+  - **韧性**：`SourceHealth` 连续失败冷却排链尾，接入三个多源组合；跨源收盘价对账 >1% 判脏。
+  - **管线集成**：增量同步 → 读库分析（`data_source=store`），源失败回退本地库；engine 按 asset_type 加载对应 scoring yaml（`config/scoring/futures.yaml` 独立权重，期货不再套用股票权重）。
+  - **Rust 侧**：`AssetType::Futures`、`Bar.amount` 允许 NaN（±inf 仍非法）。
+  - **验证**：test_sync / test_global / test_realtime 离线全绿（现并入 Python 74 总基线）；probe 13 渠道实跑全绿（含港股双源对账、美股自洽、腾讯日K与快照对账）。
 - **离线回退 + 市场路由**（`500d921`/`8e1e9d2`/`bee2212`）：东财间歇断连期间全靠这套撑住——数据源失败自动回退本地 DuckDB，报告标注数据来源与回退原因；CLI `--offline`；修复 00700/AAPL/RB0 错走 A 股链的路由 bug（改为按 `(market, asset_type)` 惰性路由）。
 - **即兴分析**（`af3eb86`）：响应"看一只股票还要改配置？"的反馈——`find_or_auto` 按代码模式自动识别市场（6位0/3/6→cn股、5位→hk、纯字母→us、字母+数字→期货），CLI 加 `--name`。002475 立讯精密入池（`572beaf`）。
 - **决策台账存储层**（`82b0cca`）：另一会话的 storage WIP（analysis_ledger append-only + trade_journal）由本会话验证收尾；期间发现对方测试断言写错（期望 Add 实际 Watch），对方会话随后自行修好——并发协作实据。
 - **报告改造 A 触发明细**（`2330aaf`）：根因是 RiskModel 在 Rust 里算好了完整触发原因（实际值+人话+贡献），综合层却丢弃。`Factor` 加 `details: Vec<Factor>` 嵌套字段，pybind 递归透传，报告新增「触发原因」表。立讯风险 100 分从此可解释：基线50 + ATR占比4.79%(+15) + 年化波动42.4%(+5) + 回撤-29.8%(+20) + 空头占优(+10)。
 - **报告改造 B 结论先行**（`ddf6b0e`）：评分表之前加「## 结论」段——机会端各模型方向一览、风险端按贡献排序 Top3 触发、综合一句话（分数 → Action + 命中规则）。纯规则模板拼接，不涉及 AI，不碰红线。
 - **报告改造 C K线配图**（`c8d0be9`）：新增 `orchestrator/chart.py`——上面板红涨绿跌蜡烛 + MA20/MA60 + BOLL(20,2) 带、下面板成交量；`AnalysisResult` 挂 `df`，`write_report` 出 `reports/charts/<symbol>_<date>.png` 并在 meta 后引用；画图失败告警降级无图。中文字体回退链实测选中 Microsoft YaHei。requirements.txt 加 matplotlib。
-- **并行动态**：另一会话开工 Python 层 `LedgerBook` 门面 + CLI（`python/meridian/ledger.py`、`tests/test_ledger.py` 未提交 WIP，其测试当时 3 红——属对方进行中状态，与本会话改动无关）。本会话提交严格只含自己文件，避免踩脚。
+- **并行动态**：另一会话开工 Python 层 `LedgerBook` 门面 + CLI（`python/meridian/ledger.py`、`tests/test_ledger.py`），其测试一度 3 红——属对方进行中状态，与本会话改动无关。
+- **bb47ed5 提交说明**（如实记录）：该提交消息写的是"DEVLOG 重构"，但实际还包含了并行会话刚 add 进暂存区的 ledger 功能全套（`ledger.py`/`test_ledger.py`/`cli.py` 台账命令/`LEDGER.md` 文档/storage + py_engine.rs Rust 侧）——共享暂存区所致，且已推送，不重写历史。提交后即时验证：Rust 81 全绿、test_ledger 11 全过（对方会话已自行修好）、Python 全量 74 全绿。**该提交实际 = DEVLOG 重构 + 决策台账 Python 层收尾，代码可用**。教训：并行会话共享 git 暂存区，`git commit` 前先 `git status` 看暂存区归属，或用 `git commit -- <自己的文件>` 路径限定。
 - **过程教训**：①matplotlib `tight_layout` 与 gridspec `hspace` 冲突告警——去掉 `tight_layout`（hspace 已够）；②judge/主模型当前不支持图像输入，K线图质量以程序化验证代替（颜色分布统计 + 字体选择断言）。
 
 ### 2026-09-03
 
-- **Phase 0：工程骨架 + 核心量化闭环**（`89a25bf`）——第一个工作会话，从零到可运行：
+- **数据渠道摸底实测**（sess_b6f551ca 会话，当日部分 `8e1e9d2`）：为"数据从哪来、靠不靠谱"做实证——13 个渠道逐一实跑，结果固化成 `docs/DATA_SOURCES.md`（每渠道：接口/字段/实测样例/坑）+ `scripts/probe_data_sources.py` 一键体检。结论：A 股日K主走东财、港美走腾讯 ifzq、期货走 akshare/新浪，通达信可做 tick 备选，CTP 暂缓。这份实测直接喂给次日（09-04）的多渠道数据层实现（`68e06e9`）。
+- **Phase 0：工程骨架 + 核心量化闭环**（`89a25bf`，本会话前身）——第一个工作会话，从零到可运行：
   - Rust workspace 六 crate（`core`/`indicators`/`quant_engine`/`storage`/`pybind`/`backtest`占位），依赖方向 `core ← indicators ← quant_engine`、`core ← storage`
   - 三层评分：Opportunity(0-100) / Risk(0-100 **独立维度非扣分项**) / Action（只能由 `action_rules` 规则匹配生成）
   - 合成公式 `Σ(模型分×权重) ÷ Σ权重`，未登记模型用 `unknown_model_weight=0.2` 兜底保证贡献可见
