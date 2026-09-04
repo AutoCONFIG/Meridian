@@ -93,12 +93,40 @@ def test_pipeline_end_to_end_offline(tmp_path):
     assert path.exists() and path.read_text(encoding="utf-8").startswith("# Meridian")
 
 
-def test_pipeline_rejects_symbol_out_of_universe(tmp_path):
-    pipeline = make_pipeline(tmp_path)
-    from meridian.config import ConfigError
+def test_pipeline_adhoc_symbol_out_of_universe(tmp_path):
+    """标的池外的代码不再拒绝：自动识别市场后走正常管线（数据源注入，离线可测）。"""
+    pipeline = make_pipeline(tmp_path)  # CsvSource 固定返回 600519 合成数据
+    # 002475 不在 conftest 的 markets.yaml 里也无所谓——自动识别为 cn/stock
+    result = pipeline.analyze("000001", start="2026-01-05", end="2026-12-31")
+    assert result.symbol == "000001"
+    assert result.market == "cn" and result.asset_type == "stock"
 
-    with pytest.raises(ConfigError):
-        pipeline.analyze("999999")
+
+def test_detect_market_patterns():
+    """代码模式 → (market, asset_type)。"""
+    from meridian.config import _detect_market
+
+    assert _detect_market("600519") == ("cn", "stock")
+    assert _detect_market("002475") == ("cn", "stock")
+    assert _detect_market("300750") == ("cn", "stock")
+    assert _detect_market("00700") == ("hk", "stock")
+    assert _detect_market("AAPL") == ("us", "stock")
+    assert _detect_market("RB0") == ("cn", "futures")
+    assert _detect_market("IF0") == ("cn", "futures")
+
+
+def test_find_or_auto_prefers_config(tmp_path):
+    """标的池内的代码仍用配置（名称/市场以配置为准）。"""
+    from meridian.config import MarketsConfig
+
+    cfg = MarketsConfig.load(ROOT)
+    entry, sym = cfg.find_or_auto("600519")
+    assert sym.name == "贵州茅台" and entry.market == "cn"
+    # 池外（601318 不在标的池）：自动识别 + 可带名称
+    entry2, sym2 = cfg.find_or_auto("601318", name="中国平安")
+    assert sym2.name == "中国平安" and entry2.market == "cn" and entry2.asset_type == "stock"
+    entry3, sym3 = cfg.find_or_auto("601318")
+    assert sym3.name == "601318"  # 未提供名称时用代码占位
 
 
 # ---- 缓存回退 / 离线模式 ----

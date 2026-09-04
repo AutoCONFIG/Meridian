@@ -15,6 +15,28 @@ class ConfigError(Exception):
     """配置缺失或格式错误。"""
 
 
+def _detect_market(symbol: str) -> tuple[str, str]:
+    """从代码模式推断 (market, asset_type)。
+
+    - 6位数字、0/3/6开头 → A股
+    - 5位数字 → 港股
+    - 纯字母 → 美股
+    - 字母+数字（RB0/IF0 等） → 期货
+    """
+    s = symbol.strip().upper()
+    if s.isdigit():
+        if len(s) == 6 and s[0] in "036":
+            return "cn", "stock"
+        if len(s) == 5:
+            return "hk", "stock"
+        return "cn", "stock"
+    if s.isalpha():
+        return "us", "stock"
+    if any(c.isalpha() for c in s) and any(c.isdigit() for c in s):
+        return "cn", "futures"
+    return "cn", "stock"
+
+
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
         raise ConfigError(f"配置文件不存在: {path}")
@@ -86,6 +108,21 @@ class MarketsConfig:
             if any(s.symbol == symbol for s in entry.symbols):
                 return entry
         raise ConfigError(f"标的 {symbol} 不在标的池中（config/markets.yaml）")
+
+    def find_or_auto(self, symbol: str, name: str | None = None) -> tuple[MarketEntry, SymbolEntry]:
+        """标的池里有就用配置；没有则按代码模式自动识别市场/类型。
+
+        标的池是为批量扫描/组合管理准备的，不该挡住单标的即兴分析。
+        """
+        for entry in self.markets:
+            for s in entry.symbols:
+                if s.symbol == symbol:
+                    return entry, s
+        market, asset_type = _detect_market(symbol)
+        auto_entry = MarketEntry(
+            market=market, asset_type=asset_type, frequency="daily", symbols=()
+        )
+        return auto_entry, SymbolEntry(symbol=symbol, name=name or symbol)
 
     @classmethod
     def load(cls, root: Path | None = None) -> "MarketsConfig":

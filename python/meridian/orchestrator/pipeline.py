@@ -201,16 +201,20 @@ class AnalysisPipeline:
             self._db = mc.PyDb.open(str(self.app.data_dir / "meridian.duckdb"))
         return self._db
 
-    def _resolve(self, symbol: str) -> tuple[MarketEntry, SymbolEntry]:
-        entry = self.markets_cfg.find(symbol)
-        sym = next(s for s in entry.symbols if s.symbol == symbol)
-        return entry, sym
+    def _resolve(self, symbol: str, name: str | None = None) -> tuple[MarketEntry, SymbolEntry]:
+        # 标的池里有就用配置（带名称）；没有则按代码模式自动识别，不挡即兴分析
+        return self.markets_cfg.find_or_auto(symbol, name=name)
 
     # ---- 主流程 ----
     def analyze(
-        self, symbol: str, start: str | None = None, end: str | None = None, offline: bool = False
+        self,
+        symbol: str,
+        start: str | None = None,
+        end: str | None = None,
+        offline: bool = False,
+        name: str | None = None,
     ) -> AnalysisResult:
-        entry, sym = self._resolve(symbol)
+        entry, sym = self._resolve(symbol, name=name)
         end_date = date.fromisoformat(end) if end else date.today() - timedelta(days=1)
         start_date = date.fromisoformat(start) if start else end_date - timedelta(days=240)
 

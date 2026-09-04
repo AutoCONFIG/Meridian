@@ -23,7 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_analyze = sub.add_parser("analyze", help="分析标的并输出 Markdown 报告")
-    p_analyze.add_argument("--symbol", required=True, help="标的代码，如 600519（须在 config/markets.yaml 标的池内）")
+    p_analyze.add_argument("--symbol", required=True, help="标的代码，如 600519 / 00700 / AAPL / RB0（标的池外代码自动识别市场）")
+    p_analyze.add_argument("--name", default=None, help="标的名称（可选；标的池内自动带名称）")
     p_analyze.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD（默认近 240 自然日）")
     p_analyze.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（默认昨日）")
     p_analyze.add_argument("--output", default=None, help="Markdown 输出路径（缺省打印到 stdout，同时写入 reports/）")
@@ -39,7 +40,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     from meridian.orchestrator.pipeline import AnalysisPipeline
 
     pipeline = AnalysisPipeline(persist=not args.no_persist)
-    result = pipeline.analyze(args.symbol, start=args.start, end=args.end, offline=args.offline)
+    result = pipeline.analyze(
+        args.symbol, start=args.start, end=args.end, offline=args.offline, name=args.name
+    )
 
     report = result.to_markdown()
     report_path = pipeline.write_report(result, args.output)
