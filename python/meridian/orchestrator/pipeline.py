@@ -236,6 +236,7 @@ class AnalysisPipeline:
         self._engines: dict[str, mc.PyEngine] = {}  # asset_type → 引擎
         self._sources: dict[tuple[str, str], DataSource] = {}  # (market, asset_type) → 组合源
         self._regime_detector: "mc.PyRegimeDetector | None" = None
+        self._index_sources: dict[str, "DataSource | None"] = {}  # market → 指数源（None=该市场无指数配置）
 
     # ---- 初始化懒加载 ----
     @property
@@ -383,8 +384,8 @@ class AnalysisPipeline:
         if self.persist and data_source == "live":
             self._insert_bars(entry, sym, df)
 
-        # 市场状态检测（trend_vol_v1，标的自身K线作代理输入）——失败降级 Unknown
-        regime_info = self._detect_regime(df)
+        # 市场状态检测（trend_vol_v1）——优先市场指数，降级标的自身K线；失败降级 Unknown
+        regime_info = self._detect_regime(entry, df, start_date, end_date, offline)
         regime_str = regime_info["regime"] if regime_info else "Unknown"
 
         score = self.engine(entry.asset_type).evaluate(
@@ -421,11 +422,42 @@ class AnalysisPipeline:
             self._record_regime(result)
         return result
 
-    def _detect_regime(self, df: pd.DataFrame) -> dict | None:
-        """市场状态检测（trend_vol_v1；一期以标的自身K线作代理输入）。
+    def _index_source(self, market: str) -> "DataSource | None":
+        """市场 → 指数日K源（config/regime.yaml index_input；未配置的市场返回 None）。"""
+        if market not in self._index_sources:
+            index_symbol = RegimeConfig.load(self._root).index_input.get(market)
+            if not index_symbol:
+                self._index_sources[market] = None
+            else:
+                from meridian.data.index import TencentIndexSource
 
-        阈值来自 config/regime.yaml；检测失败降级 None（报告显示未知），不挡分析。
+                self._index_sources[market] = TencentIndexSource()
+        return self._index_sources[market]
+
+    def _detect_regime(
+        self, entry: MarketEntry, df: pd.DataFrame,
+        start_date: date, end_date: date, offline: bool,
+    ) -> dict | None:
+        """市场状态检测（trend_vol_v1）。
+
+        输入优先用市场指数K线（cn=沪深300，config/regime.yaml index_input）；
+        指数未配置/拉取失败/离线模式时降级用标的自身K线（一期代理）。
+        检测失败降级 None（报告显示未知），均不阻断分析。
         """
+        bars_df = df
+        index_source = None if offline else self._index_source(entry.market)
+        if index_source is not None:
+            index_symbol = RegimeConfig.load(self._root).index_input.get(entry.market, "")
+            try:
+                idx_df = index_source.fetch_daily(
+                    FetchRequest(index_symbol, start_date.isoformat(), end_date.isoformat()))
+                if len(idx_df) >= RegimeConfig.load(self._root).trend_ma_slow:
+                    bars_df = idx_df
+                else:
+                    warnings.warn(f"指数 {index_symbol} 窗口不足（{len(idx_df)} 根），用标的自身K线检测")
+            except DataError as exc:
+                warnings.warn(f"指数 {index_symbol} 拉取失败，用标的自身K线检测 regime: {exc}")
+
         if self._regime_detector is None:
             from meridian import meridian_core as mc
 
@@ -442,13 +474,13 @@ class AnalysisPipeline:
             )
         try:
             return self._regime_detector.detect(
-                dates=[d.isoformat() if hasattr(d, "isoformat") else str(d) for d in df["date"]],
-                opens=[float(v) for v in df["open"]],
-                highs=[float(v) for v in df["high"]],
-                lows=[float(v) for v in df["low"]],
-                closes=[float(v) for v in df["close"]],
-                volumes=[float(v) for v in df["volume"]],
-                amounts=[float(v) for v in df["amount"]],
+                dates=[d.isoformat() if hasattr(d, "isoformat") else str(d) for d in bars_df["date"]],
+                opens=[float(v) for v in bars_df["open"]],
+                highs=[float(v) for v in bars_df["high"]],
+                lows=[float(v) for v in bars_df["low"]],
+                closes=[float(v) for v in bars_df["close"]],
+                volumes=[float(v) for v in bars_df["volume"]],
+                amounts=[float(v) for v in bars_df["amount"]],
             )
         except Exception as exc:  # noqa: BLE001 —— regime 属增强信息，失败不阻断分析
             warnings.warn(f"市场状态检测失败（降级为 Unknown）: {exc}")

@@ -195,6 +195,8 @@ class RegimeConfig:
     atr_period: int = 14
     atr_pct_crisis: float = 0.035
     atr_pct_high_vol: float = 0.025
+    # regime 检测的指数输入：market → 带前缀指数代码；未配置的市场用标的自身K线代理
+    index_input: dict = field(default_factory=lambda: {"cn": "sh000300"})
 
     @classmethod
     def load(cls, root: Path | None = None) -> "RegimeConfig":
@@ -214,4 +216,5 @@ class RegimeConfig:
             atr_period=int(vol.get("atr_period", 14)),
             atr_pct_crisis=float(vol.get("atr_pct_crisis", 0.035)),
             atr_pct_high_vol=float(vol.get("atr_pct_high_vol", 0.025)),
+            index_input=dict(raw.get("index_input", {}) or {}),
         )

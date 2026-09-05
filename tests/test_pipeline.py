@@ -196,6 +196,78 @@ def test_regime_config_missing_file_falls_back(tmp_path):
     assert cfg.trend_ma_slow == 60 and cfg.crisis_drawdown == 0.10
 
 
+# ---- Phase 1：regime 指数输入（优先市场指数，降级标的自身K线）----
+
+
+class _FakeIndexSource(DataSource):
+    name = "fake_index"
+
+    def __init__(self, df=None, error=None):
+        self.df = df
+        self.error = error
+        self.calls = 0
+
+    def fetch_daily(self, request):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.df
+
+
+def _declining_frame(days=130, start=100.0, step=-0.5):
+    """持续下跌日K（与 make_uptrend_frame 反向，供假指数源用）。"""
+    import pandas as pd
+
+    dates = pd.date_range("2026-01-05", periods=days, freq="D")
+    closes = [start + step * i for i in range(days)]
+    rows, prev = [], start - step
+    for d, c in zip(dates, closes):
+        rows.append({"date": d.date(), "open": prev,
+                     "high": max(prev, c) + 0.3, "low": min(prev, c) - 0.3,
+                     "close": c, "volume": 1e6, "amount": float("nan")})
+        prev = c
+    return pd.DataFrame(rows)[BAR_COLUMNS]
+
+
+def test_regime_prefers_index_input(tmp_path):
+    """配置了指数输入的市场：用指数K线检测（指数跌 → Bear），即使标的本身是涨势。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    fake = _FakeIndexSource(_declining_frame(130))
+    pipeline._index_sources["cn"] = fake
+
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+
+    assert fake.calls == 1, "应拉取指数日K"
+    assert result.regime == "Bear", "指数状态应覆盖标的自身形态"
+
+
+def test_regime_falls_back_when_index_fails(tmp_path):
+    """指数拉取失败 → 告警并降级用标的自身K线，分析不中断。"""
+    from meridian.data.base import DataError
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    fake = _FakeIndexSource(error=DataError("模拟指数断连"))
+    pipeline._index_sources["cn"] = fake
+
+    with pytest.warns(UserWarning, match="指数"):
+        result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31")
+
+    assert fake.calls == 1
+    assert result.regime == "Bull", "降级后应使用标的自身K线（uptrend → Bull）"
+
+
+def test_regime_offline_never_fetches_index(tmp_path):
+    """离线模式不发起任何网络请求（含指数拉取），regime 用标的自身K线。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    fake = _FakeIndexSource(_declining_frame(130))
+    pipeline._index_sources["cn"] = fake
+
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert fake.calls == 0
+    assert result.regime == "Bull"
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market
