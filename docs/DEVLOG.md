@@ -69,6 +69,12 @@
 
 ### 2026-09-05
 
+- **短期预判 + ETF 支持去白名单**（`1516c34`，响应"看不到对明天的预判"+"159509 ETF 分析失败"两项反馈）：
+  - **短期预判**（`forecast_view.py`）：明日波动区间（ATR14 ±1σ/±2σ 统计外推）+ 20 日动量外推（复用 MomentumForecastModel 的 OLS 斜率，反解预期收益）+ 关键价位（MA20/60、20 日高低）。报告「短期预判」节（结论之后）、Web 看板右侧面板、**K 线图上画 ±1σ/±2σ 虚线**（markLine 水平线正确用法）。全部规则计算+免责声明，不碰 action 红线。
+  - **ETF/场内基金支持**：`cn_symbol_prefix` 去白名单——按首位数字猜交易所前缀（沪 5/6/9、深 0/1/2/3、北交所 4/8→bj），猜错由数据源报"无数据"而非本层拒绝；akshare 源按代码选接口（5/1 开头走 `fund_etf_hist_em`）。159509 实测：腾讯链 162 根入账、Bear/Hold 正常分析。
+  - **回归 bug 修复**：加 outlook 时误插 `return result` 把 ledger/regime 留痕分支变成死代码（6 测试红）——教训：**在 return 语句前的函数体中间插入代码块，容易把后续分支顶成不可达**；本次靠 ledger 测试抓回。
+  - Web 修复遗留：drawChart 作用域引用错误（`d.outlook`→参数 `outlook`）——页顶全局错误显示机制立刻暴露了它，证明该机制值回票价。
+
 - **Phase 1·市场状态检测落地**（trend_vol_v1，全链路一次打通）：
   - **Rust**：`RegimeState` 加 `basis: Vec<String>`（人话判定依据，去 Copy 改 Clone + `normalized()`）；`market_regime.rs` 实现 `TrendVolDetector`——趋势（MA20/60 快慢线+偏离带）× 波动（ATR14 占比）× 急跌（20 日窗内回撤），判定优先级 **Crisis（急跌+高波动同时成立）> Bear/Bull（趋势成立）> HighVol > Sideways**，窗口不足恒 Unknown（同指标红线"宁缺毋滥"）。6 个单测（强涨→Bull/缓跌→Bear/崩跌+高波动→Crisis/横盘→Sideways/短窗→Unknown/阈值覆盖改变判定）。
   - **pybind**：`PyRegimeDetector`（8 个阈值参数全默认可覆盖 + 非法值校验）；`PyDb.insert_regime_history` / `latest_regime_history`。
