@@ -825,6 +825,7 @@ dependencies = [
 name = "meridian-backtest"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "meridian-core",
  "meridian-indicators",
 ]
@@ -852,6 +853,7 @@ name = "meridian-pybind"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "meridian-backtest",
  "meridian-core",
  "meridian-indicators",
  "meridian-quant-engine",
