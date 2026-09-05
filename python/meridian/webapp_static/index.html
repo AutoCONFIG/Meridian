@@ -94,6 +94,11 @@ const $ = id => document.getElementById(id);
 const fmt = (v, d = 1) => v == null ? "—" : Number(v).toFixed(d);
 let chart = null, lastBars = null, lastMeta = null;
 
+function showErr(msg) { const e = $("err"); e.style.color = "var(--up)"; e.textContent = msg; }
+
+window.addEventListener("error", ev => showErr("页面错误: " + ev.message));
+window.addEventListener("unhandledrejection", ev => showErr("异步错误: " + (ev.reason && ev.reason.message || ev.reason)));
+
 const ACTION_COLOR = { Add: "#3fa66c", Hold: "#4f8cff", Watch: "#5a647d", Reduce: "#d9a13b", Avoid: "#e05252" };
 
 async function api(path, opts) {
@@ -134,7 +139,7 @@ function drawChart(bars, meta, bt) {
   const series = [
     { name: "K线", type: "candlestick", data: bars.open.map((o, i) => [o, bars.close[i], bars.low[i], bars.high[i]]),
       itemStyle: { color: "#e05252", color0: "#3fa66b", borderColor: "#e05252", borderColor0: "#3fa66b" },
-      markPoint: markPoints(bt), markLine: latestSignalMark(meta), z: 4 },
+      markPoint: markPoints(bt, meta), z: 4 },
     { name: "MA20", type: "line", data: ma20, showSymbol: false, lineStyle: { width: 1, color: "#ff9f43" } },
     { name: "MA60", type: "line", data: ma60, showSymbol: false, lineStyle: { width: 1, color: "#b47cff" } },
     { name: "BOLL上", type: "line", data: b.up, showSymbol: false, lineStyle: { width: .8, color: "#4f8cff88", type: "dashed" } },
@@ -180,13 +185,17 @@ function drawChart(bars, meta, bt) {
     series,
   };
   if (!chart) chart = echarts.init($("chart"));
-  chart.setOption(option, true);
+  try {
+    chart.setOption(option, true);
+  } catch (e) {
+    showErr("图表渲染失败: " + e.message);
+    return;
+  }
 }
 
-function markPoints(bt) {
-  if (!bt) return undefined;
+function markPoints(bt, meta) {
   const pts = [];
-  for (const t of bt.trades) {
+  if (bt) for (const t of bt.trades) {
     pts.push({ coord: [t.date_in, t.price_in], value: "买入",
                symbol: "triangle", symbolSize: 13, symbolRotate: 0, symbolOffset: [0, "120%"],
                itemStyle: { color: "#e05252" }, label: { show: false } });
@@ -194,18 +203,14 @@ function markPoints(bt) {
                symbol: "triangle", symbolSize: 13, symbolRotate: 180, symbolOffset: [0, "-120%"],
                itemStyle: { color: "#3fa66b" }, label: { show: false } });
   }
+  if (meta && meta.last_date) {
+    const hint = meta.position_hint == null ? "" : ` ${Math.round(meta.position_hint * 100)}%`;
+    pts.push({ coord: [meta.last_date, meta.last_close], value: meta.action + hint,
+               symbol: "pin", symbolSize: 46, symbolOffset: [0, "-58%"],
+               label: { show: true, formatter: meta.action + hint, color: "#fff", fontSize: 11, fontWeight: 700 },
+               itemStyle: { color: ACTION_COLOR[meta.action] || "#4f8cff" } });
+  }
   return pts;
-}
-
-function latestSignalMark(meta) {
-  if (!meta) return undefined;
-  const hint = meta.position_hint == null ? "" : ` ${Math.round(meta.position_hint * 100)}%`;
-  return {
-    symbol: "pin", symbolSize: 46, symbolOffset: [0, "-58%"],
-    data: [{ coord: [meta.last_date, meta.last_close], value: meta.action + hint }],
-    label: { show: true, formatter: meta.action + hint, color: "#fff", fontSize: 11, fontWeight: 700 },
-    itemStyle: { color: ACTION_COLOR[meta.action] || "#4f8cff" },
-  };
 }
 
 function signalSeries(bt, dates) {
