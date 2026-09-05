@@ -659,6 +659,46 @@ def test_outlook_attached_to_analysis_and_report(tmp_path):
     assert "不构成投资建议" in report
 
 
+def test_detect_patterns_finds_known_shapes():
+    """构造经典形态（锤子/阳吞没/红三兵）逐一命中。"""
+    import pandas as pd
+
+    from meridian.data.base import BAR_COLUMNS
+    from meridian.patterns import detect_patterns
+
+    def row(day, o, c, h, l):
+        return {"date": pd.Timestamp(f"2026-01-{day:02d}").date(), "open": o, "close": c,
+                "high": h, "low": l, "volume": 1e6, "amount": 1e8}
+
+    # 锤子线：小实体+长下影（实体/波幅 > 0.1，避开十字星）
+    hammer = [row(1, 100, 100, 100.3, 100.2), row(2, 100, 100, 100.3, 100.2),
+              row(3, 100, 100.3, 100.35, 98.2)]  # 实体0.3 下影1.8 上影0.05
+    names = {p["name"] for p in detect_patterns(pd.DataFrame(hammer)[BAR_COLUMNS])}
+    assert "锤子线" in names
+
+    # 阳包阴：前阴后阳且实体完全包裹
+    engulf = [row(1, 102, 100, 102.3, 99.8), row(2, 100, 99, 100.3, 98.8), row(3, 98.8, 102.5, 102.8, 98.5)]
+    names = {p["name"] for p in detect_patterns(pd.DataFrame(engulf)[BAR_COLUMNS])}
+    assert "阳包阴（吞没）" in names
+
+    # 红三兵：三连阳逐级抬升
+    soldiers = [row(1, 100, 101, 101.2, 99.9), row(2, 101, 102, 102.2, 100.9),
+                row(3, 102, 103, 103.2, 101.9)]
+    names = {p["name"] for p in detect_patterns(pd.DataFrame(soldiers)[BAR_COLUMNS])}
+    assert "红三兵" in names
+
+
+def test_patterns_attached_to_analysis(tmp_path):
+    """analyze 结果带 patterns（合成上涨序列至少出现红三兵/光头光脚类）。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert isinstance(result.patterns, list)
+    report = result.to_markdown()
+    if result.patterns:
+        assert "## K线形态" in report
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

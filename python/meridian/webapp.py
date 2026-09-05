@@ -115,6 +115,7 @@ def analyze(req: AnalyzeRequest):
         ],
         "bars": bars,
         "outlook": result.outlook,
+        "patterns": result.patterns,
         "factors": {
             layer: [
                 {

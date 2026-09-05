@@ -90,6 +90,7 @@ class AnalysisResult:
     research_notes: list = field(default_factory=list)  # ResearchNote 列表（客观事实，无评分——红线 2）
     fundamentals: dict | None = None  # 基本面速览（pe_ttm/pb 等；None=无数据）
     outlook: dict | None = None  # 短期预判（ATR 区间/动量外推，统计信息非建议）
+    patterns: list = field(default_factory=list)  # K线形态识别（几何判定，非信号）
 
     # ---- 视图便捷属性 ----
     @property
@@ -134,6 +135,18 @@ class AnalysisResult:
             from meridian.forecast_view import render_outlook
 
             lines += render_outlook(self.outlook)
+        if self.patterns:
+            recent = self.patterns[-10:]
+            lines += [
+                "## K线形态（最近 10 个标注）",
+                "",
+                "| 日期 | 形态 | 倾向 | 含义 |",
+                "| --- | --- | --- | --- |",
+            ]
+            lines += [
+                f"| {p['date']} | {p['name']} | {p['bias']} | {p['desc']} |" for p in recent
+            ]
+            lines += ["", "> 形态为几何判定，不构成信号；完整列表见看板图内标注。", ""]
         if self.ai_summary:
             lines += [
                 "## AI 摘要",
@@ -484,6 +497,12 @@ class AnalysisPipeline:
             result.outlook = short_term_outlook(df)
         except Exception as exc:  # noqa: BLE001 —— 预判属增强信息，失败不阻断
             warnings.warn(f"短期预判计算失败（报告无该节）: {exc}")
+        try:
+            from meridian.patterns import detect_patterns
+
+            result.patterns = detect_patterns(df)
+        except Exception as exc:  # noqa: BLE001 —— 形态标注属增强信息
+            warnings.warn(f"K线形态识别失败（图无形态标注）: {exc}")
 
         if self.persist:
             self._record_ledger(result)
