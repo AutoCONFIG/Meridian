@@ -8,9 +8,9 @@
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
 - **最新提交**：见 `git log`；本节随每次提交更新
-- **测试基线**：Rust 88（core 27 + indicators 21 + quant_engine 27 + storage 13）+ Python 78，全绿
-- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0 / 601318 / 300059（日K到 2026-09-04）
-- **当前阶段**：Phase 1 进行中——RegimeDetector 真实逻辑（trend_vol_v1）✅ 落地；下一步 regime 权重档配置扩展 / 回测引擎
+- **测试基线**：Rust 94（core 27 + indicators 21 + quant_engine 27 + storage 13 + backtest 6）+ Python 90，全绿
+- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）
+- **当前阶段**：Phase 1 全部完成（regime 检测 + 指数输入 + 权重档 + 批量分析）；Phase 2 主体完成（回测引擎 + LLM Summary Agent）；剩 Phase 3+（组合管理/基本面/Web）
 - **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
 
 ## 当前阶段任务
@@ -28,17 +28,23 @@
 
 - [x] **决策台账 Python 层**（`bb47ed5`，并行会话完成）——`LedgerBook` 门面 + CLI 台账命令 + `LEDGER.md` 使用文档；与 DEVLOG 重构同提交入库（见日记 09-04「bb47ed5 提交说明」），Rust 81 + Python 74 全绿
 - [x] **Phase 1·市场状态检测 trend_vol_v1**（09-05）——RegimeState 加 basis、TrendVolDetector 规则检测、`config/regime.yaml` 阈值、`regime_history` 表落库、报告"市场状态"区（中文+置信度+判定依据）；002475 实测 Bear 95%（详见日记 09-05）
+- [x] **Phase 1·权重档/指数输入/批量分析**（09-05）
+  - 权重档扩展：stock/futures yaml 的 by_regime 补全 Bull/Sideways/HighVol/Crisis 五档（Bear 档原有），regime 检测后权重真实切换
+  - 指数输入：`data/index.py` 腾讯指数日K（sh000300 沪深300）——regime 检测优先用市场指数，失败/离线降级标的自身K线；`config/regime.yaml index_input` 配置
+  - `analyze-all`：批量分析标的池（单标的失败不挡批量）→ 每标的报告 + `reports/summary_<date>.md` 汇总表；实跑 7 标的全通，regime 五档各异
+  - 过程中修 `.gitignore` `data/` 规则误伤 `python/meridian/data/`（改为根锚定 `/data/`）
+- [x] **Phase 2·回测引擎**（09-05）——backtest crate 激活：事件驱动（T 日收盘信号 → T+1 开盘撮合，防未来函数同构约束）、佣金/最低佣金/滑点、期末虚拟平仓；绩效（总收益/年化/最大回撤/夏普/胜率/盈亏比/净值曲线/交易明细）；`config/backtest.yaml`（action→目标仓位映射进配置，回测器不理解 action）；`ScoreBasedBacktester` 逐日评分（与实盘同一条 evaluate 路径 + 逐日 regime 切权重档）；CLI `backtest` 出报告+净值/回撤/仓位三面板图。实跑 600519：-6.05%、回撤 6.08%、夏普 -1.70、7 笔（下行期保守，合理）
+- [x] **Phase 2·LLM Summary Agent**（09-05）——`llm_client.py`（OpenAI 兼容，配置只从 env 读）+ `summary_agent.py`（规则报告→3-5 句人话摘要）；**只输出解释文本，无评分字段不改建议（红线 1/2）**；未配置 env 或调用失败自动降级为无摘要；报告"AI 摘要"节带免责引用
 
 ### 🔨 进行中（并行会话）
 
-- （当前无——并行会话的 ledger 功能已随 `bb47ed5` 收尾入库）
+- （当前无）
 
 ### 📋 待办（按 PLAN.md 路线）
 
-- [ ] **Phase 1 剩余**：指数渠道接入（检测输入从标的自身K线切到沪深300/标普500/VIX）、regime 权重档扩展（by_regime 目前只有 Bear 档）、scheduler 定时任务
-- [ ] **Phase 2：回测 + AI 摘要**——回测引擎激活（backtest crate 占位中）、LLM Summary Agent（把规则报告转译成人话，不产分数不碰 action）
 - [ ] **Phase 3+**：组合管理、基本面数据、AI 预测模型（只进 Opportunity/Risk 通道）、Research Agents、FastAPI Web + Tauri
 - [ ] （低优先）Mimosa 完整安全审计补跑（钩子一直提示"扫描未完整"）
+- [ ] （低优先）指数输入扩展至 hk/us（恒生/标普500 代码验证）；Walk Forward 回测；scheduler 定时任务（当前用系统任务计划程序触发 CLI 即可）
 
 ## 开发日记
 
@@ -53,6 +59,12 @@
   - **一期代理输入说明**：检测输入暂用标的自身K线（数据层尚无指数渠道）；PLAN 的指数版（沪深300/标普500/VIX）后续只换输入不换代码（trait 接口不变）。
   - **实测**：002475 立讯精密 → **Bear 95%**，依据"MA20/60 = 56.05/60.50 偏离 -10.2%；20日回撤 -7.7%；ATR14/收盘 5.0%"，regime_history 落库可读回。
   - **过程教训**：①duckdb-rs 的 `rows.next()` 返回 `Result<Option<&Row>>`（rusqlite 是 Option），match 分支要 Ok(None)/Ok(Some)/Err；②pyclass 方法调 trait 方法必须 import trait 本身；③测试预灌内存库必须无条件做（persist=False 也会经 `_read_cache` 触碰真实 data/ 库文件，撞文件锁）。
+- **下午连推四件套（权重档→指数输入→批量分析→回测）+ LLM 摘要**（`7f9a235`/`1429236`/`6dbe7f6`/`ae826de`/`6f61887`）：
+  - **权重档**：by_regime 五档配齐（Bull 趋势动量主导 / Bear 资金优先 / Sideways 动量主导 / HighVol 降动量 / Crisis 防御只看资金）。
+  - **指数输入**：腾讯 ifzq 同款接口拉指数（代码自带前缀即可，复用 parse_fqkline）；offline 语义严格化——**离线不发起任何网络请求（含指数）**。
+  - **回测**：一期撮合器 ~250 行 Rust（NaN 权重=维持现状的信号协议、期末虚拟平仓保胜率统计完整）；`Position.since` 直接记建仓日，弃用按价格反查入场日的脆弱方案；测试数据要用 open 递增序列（open 全平的序列在 T+1 开盘撮合下无价差，pnl 断言会假失败）。
+  - **LLM**：env 三变量（MERIDIAN_LLM_BASE_URL/API_KEY/MODEL）齐全才启用；system prompt 明确"禁止新评分新建议"。
+  - 实跑：analyze-all 7 标的全通（regime 五档各异、A股统一跟随沪深300）；600519 回测 -6.05%（下行期保守，合理）。
 
 ### 2026-09-04
 
