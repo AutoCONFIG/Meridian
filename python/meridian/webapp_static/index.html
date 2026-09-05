@@ -78,6 +78,10 @@
       <div id="funda" class="muted"></div>
     </div>
     <div class="panel" style="margin-bottom:12px">
+      <h2>短期预判（统计外推，非保证）</h2>
+      <div id="outlook" class="muted">← 点「分析」</div>
+    </div>
+    <div class="panel" style="margin-bottom:12px">
       <h2>研究视角（客观事实，无评分）</h2>
       <ul id="notes" style="margin:0;padding-left:18px;font-size:12.5px"></ul>
     </div>
@@ -92,7 +96,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 1) => v == null ? "—" : Number(v).toFixed(d);
-let chart = null, lastBars = null, lastMeta = null;
+let chart = null, lastBars = null, lastMeta = null, lastOutlook = null;
 
 function showErr(msg) { const e = $("err"); e.style.color = "var(--up)"; e.textContent = msg; }
 
@@ -131,7 +135,7 @@ function boll(closes, n = 20, k = 2) {
 }
 
 /* ---- K线主图 ---- */
-function drawChart(bars, meta, bt) {
+function drawChart(bars, meta, bt, outlook) {
   const dates = bars.dates, closes = bars.close;
   const ma20 = sma(closes, 20), ma60 = sma(closes, 60);
   const b = boll(closes);
@@ -139,7 +143,7 @@ function drawChart(bars, meta, bt) {
   const series = [
     { name: "K线", type: "candlestick", data: bars.open.map((o, i) => [o, bars.close[i], bars.low[i], bars.high[i]]),
       itemStyle: { color: "#e05252", color0: "#3fa66b", borderColor: "#e05252", borderColor0: "#3fa66b" },
-      markPoint: markPoints(bt, meta), z: 4 },
+      markPoint: markPoints(bt, meta), markLine: outlookMarkLines(outlook), z: 4 },
     { name: "MA20", type: "line", data: ma20, showSymbol: false, lineStyle: { width: 1, color: "#ff9f43" } },
     { name: "MA60", type: "line", data: ma60, showSymbol: false, lineStyle: { width: 1, color: "#b47cff" } },
     { name: "BOLL上", type: "line", data: b.up, showSymbol: false, lineStyle: { width: .8, color: "#4f8cff88", type: "dashed" } },
@@ -193,8 +197,25 @@ function drawChart(bars, meta, bt) {
   }
 }
 
-function markPoints(bt, meta) {
-  const pts = [];
+function outlookMarkLines(outlook) {
+  // 明日波动区间画在K线右端（markLine 水平线 yAxis 用法），只在最后 1/4 区域显示标签
+  if (!outlook) return undefined;
+  const line = (y, color, label) => ({
+    yAxis: y, lineStyle: { color, type: "dashed", width: 1.2 },
+    label: { formatter: label, color, fontSize: 10, position: "insideEndTop" },
+  });
+  return {
+    silent: true, symbol: ["none", "none"], animation: false,
+    data: [
+      line(outlook.range_95[1], "#8b96ad", "明日 +2σ"),
+      line(outlook.range_68[1], "#4f8cff", "明日 +1σ"),
+      line(outlook.range_68[0], "#4f8cff", "明日 −1σ"),
+      line(outlook.range_95[0], "#8b96ad", "明日 −2σ"),
+    ],
+  };
+}
+
+function markPoints(bt, meta) {  const pts = [];
   if (bt) for (const t of bt.trades) {
     pts.push({ coord: [t.date_in, t.price_in], value: "买入",
                symbol: "triangle", symbolSize: 13, symbolRotate: 0, symbolOffset: [0, "120%"],
@@ -242,6 +263,17 @@ function renderPanels(d) {
     ? `基本面（${d.fundamentals.date}）：PE-TTM ${fmt(d.fundamentals.pe_ttm, 2)} / PB ${fmt(d.fundamentals.pb, 2)} / 总市值 ${fmt(d.fundamentals.total_mv, 0)} 亿（${d.fundamentals.source}）`
     : "基本面：暂无数据";
 
+  const o = d.outlook;
+  if (o) {
+    const dir = { up: "偏多", down: "偏空", neutral: "中性" }[o.momentum_direction] || o.momentum_direction;
+    $("outlook").innerHTML =
+      `明日波动（收 ${fmt(o.last_close, 2)}，ATR ${fmt(o.atr, 2)}）：` +
+      `<b style="color:var(--text)">${fmt(o.range_68[0], 2)} ~ ${fmt(o.range_68[1], 2)}</b>（±1σ）／` +
+      `<b style="color:var(--text)">${fmt(o.range_95[0], 2)} ~ ${fmt(o.range_95[1], 2)}</b>（±2σ，图中虚线）<br>` +
+      `20 日动量外推：<b style="color:${o.expected_20d > 0 ? "var(--up)" : "var(--down)"}">${(o.expected_20d * 100).toFixed(1)}%</b>（${dir}）<br>` +
+      `关键位：MA20 ${fmt(o.ma20, 2)}／MA60 ${fmt(o.ma60, 2)}／20日高 ${fmt(o.high20, 2)}／低 ${fmt(o.low20, 2)}`;
+  } else $("outlook").textContent = "数据不足 60 根，无法计算预判";
+
   const layerTable = (title, factors) => {
     const rows = factors.map(f => {
       const trig = (f.details || []).map(x =>
@@ -273,7 +305,8 @@ async function doAnalyze() {
     lastMeta = { action: d.action, position_hint: d.position_hint,
                  last_date: d.bars ? d.bars.dates[d.bars.dates.length - 1] : null,
                  last_close: d.bars ? d.bars.close[d.bars.close.length - 1] : null };
-    drawChart(d.bars, lastMeta, null);
+    lastOutlook = d.outlook;
+    drawChart(d.bars, lastMeta, null, d.outlook);
     renderPanels(d);
   } catch (e) { $("err").textContent = "分析失败: " + e.message; }
   finally { $("go").disabled = false; }
@@ -286,7 +319,7 @@ async function doBacktest() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: $("symbol").value.trim(), offline: $("offline").checked }),
     });
-    drawChart(lastBars, lastMeta, bt);
+    drawChart(lastBars, lastMeta, bt, lastOutlook);
     $("err").style.color = "#3fa66c";
     $("err").textContent = `回测叠加完成：收益 ${fmt(bt.total_return * 100, 1)}%，回撤 ${fmt(bt.max_drawdown * 100, 1)}%，夏普 ${fmt(bt.sharpe, 2)}，${bt.trade_count} 笔（底部色带=逐日建议，▲买入 ▼卖出）`;
     $("err").style.color = "";

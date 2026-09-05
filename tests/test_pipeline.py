@@ -624,6 +624,41 @@ def test_news_agent_renders_titles_or_skips(tmp_path, monkeypatch):
     assert NewsAgent().investigate(result) == []
 
 
+# ---- 短期预判（统计外推）----
+
+
+def test_short_term_outlook_from_uptrend(tmp_path):
+    """上涨序列：明日区间含现价、动量外推为正、关键价位齐全。"""
+    from conftest import make_uptrend_frame
+    from meridian.forecast_view import render_outlook, short_term_outlook
+
+    df = make_uptrend_frame(130)
+    o = short_term_outlook(df)
+
+    assert o is not None
+    lo68, hi68 = o["range_68"]
+    assert lo68 < o["last_close"] < hi68, "±1σ 区间应包含现价"
+    assert o["expected_20d"] > 0, "上涨序列动量外推应为正"
+    assert o["ma20"] > o["ma60"]
+    assert o["high20"] >= o["last_close"]
+
+    text = "\n".join(render_outlook(o))
+    assert "## 短期预判" in text and "±1 ATR" in text and "统计外推" in text
+    assert "不是对未来的预测或保证" in text
+
+
+def test_outlook_attached_to_analysis_and_report(tmp_path):
+    """analyze 结果带 outlook；报告「短期预判」节位于结论之后。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert result.outlook is not None
+    report = result.to_markdown()
+    assert "## 短期预判" in report
+    assert report.index("## 结论") < report.index("## 短期预判")
+    assert "不构成投资建议" in report
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

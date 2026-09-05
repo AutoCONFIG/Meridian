@@ -114,6 +114,7 @@ def analyze(req: AnalyzeRequest):
             {"agent": n.agent, "title": n.title, "body": n.body} for n in result.research_notes
         ],
         "bars": bars,
+        "outlook": result.outlook,
         "factors": {
             layer: [
                 {

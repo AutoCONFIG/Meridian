@@ -64,14 +64,22 @@ def is_futures(symbol: str) -> bool:
 
 
 def cn_symbol_prefix(symbol: str) -> str:
-    """A股 6 位代码 → 新浪/腾讯前缀。仅支持沪 6 / 深 0、3。"""
+    """A股/场内基金 6 位代码 → 交易所前缀（按首位数字特征猜，不设白名单）。
+
+    沪：5(基金)/6(股票)/9(B股)；深：0(股票)/1(基金)/2(B股)/3(创业)；4/8(北交所)→bj。
+    猜错渠道由上游报"无数据"，不在本层拒绝——尽力支持一切代码。
+    """
     s = symbol.strip()
-    if len(s) == 6 and s.isdigit():
-        if s[0] == "6":
-            return "sh"
-        if s[0] in "03":
-            return "sz"
-    raise DataError(f"暂不支持的 A 股代码: {symbol}（仅沪 6 开头 / 深 0、3 开头）")
+    if len(s) != 6 or not s.isdigit():
+        raise DataError(f"代码格式应为 6 位数字: {symbol}")
+    first = s[0]
+    if first in "569":
+        return "sh"
+    if first in "0123":
+        return "sz"
+    if first in "48":
+        return "bj"
+    return "sh"  # 兜底猜测，拿不到数据由数据源报错
 
 
 def em_futures_secid(symbol: str, exchange: str) -> str:

@@ -108,12 +108,16 @@ def test_tencent_quote_parse():
 
 
 def test_cn_symbol_prefix_rules():
+    """按首位特征猜交易所前缀，不设白名单（159509 ETF 等尽力支持）。"""
     assert cn_symbol_prefix("600519") == "sh"
     assert cn_symbol_prefix("000001") == "sz"
     assert cn_symbol_prefix("300750") == "sz"
-    for bad in ("930955", "830799", "60051"):
-        with pytest.raises(DataError):
-            cn_symbol_prefix(bad)
+    assert cn_symbol_prefix("159509") == "sz"   # 深 ETF
+    assert cn_symbol_prefix("510300") == "sh"   # 沪 ETF
+    assert cn_symbol_prefix("900901") == "sh"   # 沪 B
+    assert cn_symbol_prefix("830799") == "bj"   # 北交所（渠道有无数据由数据源报）
+    with pytest.raises(DataError):
+        cn_symbol_prefix("60051")               # 非 6 位仍拒绝
 
 
 def test_em_futures_secid_rules():

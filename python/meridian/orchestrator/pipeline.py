@@ -89,6 +89,7 @@ class AnalysisResult:
     ai_summary: str | None = None  # LLM 转译摘要（解释性文本；无评分无新建议——红线 1/2）
     research_notes: list = field(default_factory=list)  # ResearchNote 列表（客观事实，无评分——红线 2）
     fundamentals: dict | None = None  # 基本面速览（pe_ttm/pb 等；None=无数据）
+    outlook: dict | None = None  # 短期预判（ATR 区间/动量外推，统计信息非建议）
 
     # ---- 视图便捷属性 ----
     @property
@@ -129,6 +130,10 @@ class AnalysisResult:
         if chart_image:
             lines += [f"![{self.name} ({self.symbol}) K线图]({chart_image})", ""]
         lines += self._summary_lines()
+        if self.outlook:
+            from meridian.forecast_view import render_outlook
+
+            lines += render_outlook(self.outlook)
         if self.ai_summary:
             lines += [
                 "## AI 摘要",
@@ -473,6 +478,12 @@ class AnalysisPipeline:
             regime_detector=str(regime_info["detector"]) if regime_info else "",
             fundamentals=self._load_fundamentals(entry, sym, offline),
         )
+        try:
+            from meridian.forecast_view import short_term_outlook
+
+            result.outlook = short_term_outlook(df)
+        except Exception as exc:  # noqa: BLE001 —— 预判属增强信息，失败不阻断
+            warnings.warn(f"短期预判计算失败（报告无该节）: {exc}")
 
         if self.persist:
             self._record_ledger(result)

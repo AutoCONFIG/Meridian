@@ -30,7 +30,8 @@ _AKSHARE_COLUMN_MAP = {
 
 
 class CnStockSource(DataSource):
-    """akshare A 股日K（前复权）。"""
+    """akshare A 股/场内基金日K（前复权）。按代码特征选接口：5/1 开头（场内基金）
+    走 fund_etf_hist_em，其余走 stock_zh_a_hist（北交所代码东财同接口支持）。"""
 
     name = "akshare"
 
@@ -41,13 +42,16 @@ class CnStockSource(DataSource):
         import akshare as ak  # 延迟导入：不联网的测试不付出 import 成本
 
         def _call() -> pd.DataFrame:
-            df = ak.stock_zh_a_hist(
-                symbol=request.symbol,
+            kwargs = dict(
                 period="daily",
                 start_date=request.start.replace("-", ""),
                 end_date=request.end.replace("-", ""),
                 adjust="qfq",
             )
+            if request.symbol[0] in "51":  # 场内基金/ETF（沪 5 / 深 1）
+                df = ak.fund_etf_hist_em(symbol=request.symbol, **kwargs)
+            else:
+                df = ak.stock_zh_a_hist(symbol=request.symbol, **kwargs)
             return self._normalize(df, request.symbol)
 
         return with_retry(_call, self._cfg.retry_for(self.name), what=f"akshare 日K {request.symbol}")
