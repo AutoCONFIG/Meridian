@@ -9,9 +9,10 @@
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
 - **最新提交**：见 `git log`；本节随每次提交更新
 - **测试基线**：Rust 96（core 27 + indicators 21 + quant_engine 28 + storage 14 + backtest 6）+ Python 107，全绿
-- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）
-- **当前阶段**：Phase 0/1/2 + Phase 3 主体全部完成（研究 Agent/基本面/AI 预测脚手架/Web API）；剩 Tauri 桌面壳、基本面评分模型（fundamental_model 进 Risk 通道）等
-- **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
+- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）；fundamentals 表有 600519/002475 估值快照
+- **当前阶段**：Phase 0-3 主体完成（见 README 状态表）；**本阶段收尾，交接给后续 AI/维护者**——接手从下方「交接清单」开始
+- **运行中服务（本机）**：Web 看板 http://127.0.0.1:8300（uvicorn 后台）；Tauri 桌面壳 debug 版可执行 `desktop/src-tauri/target/debug/meridian-desktop.exe`
+- **并行会话**：另一会话的 ledger 功能已随 `bb47ed5` 入库；若再开并行会话，遵守「并行会话提交」规则（环境备忘表）
 
 ## 当前阶段任务
 
@@ -118,6 +119,31 @@
   - duckdb 1.3 bundled（MSVC 首次编译 ~40min）、UPSERT、Hive 分区 parquet
   - pyo3 0.26：maturin mixed 布局 `meridian.meridian_core`；Python 模型桥接协议 `analyze(payload) -> dict`
   - 配置系统：app/markets/data_sources/scoring 四组 YAML，代码零硬编码（验收标准 6/7）
+
+## 交接清单（下一个 AI 从这里开始）
+
+> 2026-09-05 本阶段收尾时的完整交接。先读架构红线（下），再按本清单接任务。
+
+**✅ 已完成能力**（命令与入口见 README）：单标的/批量分析（K线看板+触发明细+研究视角+基本面+AI摘要）、回测（T+1 撮合/绩效/净值图）、组合分析、决策台账+人工流水、regime 检测（trend_vol_v1，cn 用沪深300/hk 用恒生输入）、规则仓位、FastAPI Web、Tauri Windows 壳。
+
+**🔲 未完成任务（按优先级，附起点提示）：**
+
+1. **fundamental_model 评分接入**（Phase 3 剩余）
+   - 现状：基本面只是**信息层**（`data/fundamentals.py` → `fundamentals` 表 → 报告"基本面速览"），不参与评分
+   - 起点：①`crates/core/src/context.rs` `AnalysisContext` 加 `fundamentals: &BTreeMap<String, f64>`（或 Option）字段；②修全部构造点（py_engine.rs evaluate、quant_engine lib.rs testutil、storage/model.rs 测试——grep `AnalysisContext {`）；③`py_engine.rs evaluate` 加可选 fundamentals 参数（dict→map）；④`build_payload` 加 `"fundamentals"` 键；⑤写 Python 规则模型（category="rule"，channel="risk"）读 `payload["fundamentals"]["pe_ttm"]` 做估值风控分；⑥`config/models.yaml` 注册（建议给条目加 `asset_types: ["stock"]` 过滤——期货没有 PE，pipeline `_load_registered_models` 按 engine 的 asset_type 过滤）；⑦`config/scoring/stock.yaml` risk.default 登记 valuation_model 权重（不登记则吃 unknown_model_weight=0.2）
+2. **Research Agent 扩展**（Phase 3 剩余）：现 3 个 Agent（technical/vol_liquidity/news）在 `python/meridian/research.py`，协议=返回 `ResearchNote` 列表、禁评分（红线 2）。扩行业对比/公告等需先接数据源（akshare 有 `stock_financial_analysis_indicator` 等渠道，DATA_SOURCES.md 有实测方法论）
+3. **Tauri 正式分发**：现在 debug 壳依赖用户机器的 .venv。正道=PyInstaller 把 `python -m uvicorn meridian.webapp:app` 打成独立 exe → tauri.conf.json `bundle.externalBin`（sidecar）→ `npx tauri build` 出三平台安装包。macOS/Linux 打包需对应机器
+4. **Mimosa 完整安全审计**：每次 commit 钩子都提示"扫描未完整（project_model/python_ast_unavailable）"。可运行 `/mimosa-security-scan`（sealed 深度扫描）补一次完整审计并归档结论
+5. **（低优先）us 指数输入**：ifzq 美股指数量K只有实时快照（2026-09-05 实测），需另找历史K渠道（如 Stooq/EODHD 免费层）；Walk Forward 回测对规则策略价值有限，缓
+
+**⚠️ 交接风险与已知坑（历史教训，别再踩）：**
+
+- **.gitignore 曾吞掉整个数据层**（`data/` 规则匹配任意层级）：68e06e9 提交宣称的数据源文件实际没进库，`4364e69` 才补齐。规则已改为根锚定 `/data/`。**教训：`git add` 后必须 `git status` 核对文件真的进了暂存区**
+- 并行会话共享 git 暂存区：commit 前先 `git status` 看暂存区归属，或 `git commit -- <自己的文件>` 路径限定（bb47ed5 曾把并行会话 WIP 一并卷入）
+- 测试管线必须预灌内存库（`pipeline._db = mc.PyDb.open_in_memory()`）：否则 offline 分析会打开真实 `data/meridian.duckdb`，撞文件锁或测试结果漂移
+- Rust 侧坑：duckdb-rs `rows.next()` 返回 `Result<Option>`；pyclass 调 trait 方法要 import trait；`///` doc 行与 `fn` 签名必须分两行（否则签名被注释掉）；pyo3 闭包里不能跨 attach 用 `?`
+- 环境：maturin 要 `export PYO3_PYTHON`+`VIRTUAL_ENV`（表见下）；akshare 直连要 `NO_PROXY=*`；中文字体回退链在 `chart.py::_CJK_FONTS`
+- 回测/评估数据构造：测试用合成序列时 open 要有变化（T+1 开盘撮合下 open 全平无价差）；镜像价格≠负相关收益率（要按收益率取反递推构造）
 
 ## 环境备忘（踩过的坑）
 
