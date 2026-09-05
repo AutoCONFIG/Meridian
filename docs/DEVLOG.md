@@ -8,9 +8,9 @@
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
 - **最新提交**：见 `git log`；本节随每次提交更新
-- **测试基线**：Rust 94（core 27 + indicators 21 + quant_engine 27 + storage 13 + backtest 6）+ Python 90，全绿
+- **测试基线**：Rust 95（core 27 + indicators 21 + quant_engine 28 + storage 13 + backtest 6）+ Python 94，全绿
 - **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）
-- **当前阶段**：Phase 1 全部完成（regime 检测 + 指数输入 + 权重档 + 批量分析）；Phase 2 主体完成（回测引擎 + LLM Summary Agent）；剩 Phase 3+（组合管理/基本面/Web）
+- **当前阶段**：Phase 1/2 全部完成；Phase 3 核心（规则仓位 + 组合分析 + daily 调度入口）完成；剩 Phase 3 远期（基本面/AI 预测模型/Research Agents/FastAPI Web + Tauri）
 - **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
 
 ## 当前阶段任务
@@ -35,6 +35,11 @@
   - 过程中修 `.gitignore` `data/` 规则误伤 `python/meridian/data/`（改为根锚定 `/data/`）
 - [x] **Phase 2·回测引擎**（09-05）——backtest crate 激活：事件驱动（T 日收盘信号 → T+1 开盘撮合，防未来函数同构约束）、佣金/最低佣金/滑点、期末虚拟平仓；绩效（总收益/年化/最大回撤/夏普/胜率/盈亏比/净值曲线/交易明细）；`config/backtest.yaml`（action→目标仓位映射进配置，回测器不理解 action）；`ScoreBasedBacktester` 逐日评分（与实盘同一条 evaluate 路径 + 逐日 regime 切权重档）；CLI `backtest` 出报告+净值/回撤/仓位三面板图。实跑 600519：-6.05%、回撤 6.08%、夏普 -1.70、7 笔（下行期保守，合理）
 - [x] **Phase 2·LLM Summary Agent**（09-05）——`llm_client.py`（OpenAI 兼容，配置只从 env 读）+ `summary_agent.py`（规则报告→3-5 句人话摘要）；**只输出解释文本，无评分字段不改建议（红线 1/2）**；未配置 env 或调用失败自动降级为无摘要；报告"AI 摘要"节带免责引用
+- [x] **Phase 3·规则仓位 + 组合分析 + daily 入口**（09-05）
+  - **规则式仓位建议**：`action_rules` 规则可选 `position: [0,1]`（命中带出 → `position_hint`，非法值 NaN/负→None、>1 收敛 1）；stock/futures yaml 配齐（Add=1.0 / Hold=0.5）；报告结论行显示"规则仓位参考 x%"
+  - **指数输入扩展**：hk 加恒生指数 hkHSI（实测 ifzq 有日K）；**us 不配**——ifzq 美股指数量K仅实时快照（day 为空，2026-09-05 实测），维持标的自身K线代理
+  - **组合分析**（`portfolio.py` + CLI `portfolio`）：集中度 HHI（有效持仓数）、日收益率 Pearson 相关矩阵（近 120 日）+ 高相关对(>0.7)提示、加权风险暴露（>65 提示降仓）、组合规则仓位 Σ(w×hint)；权重来自 `config/portfolio.yaml` holdings（缺省等权）；实跑 7 标的：HHI 0.143 / 暴露 62.1 / 组合仓位 50%
+  - **`daily` 一条龙**：analyze-all → portfolio → 台账导出，作为定时任务入口（调度用系统任务计划程序/cron 触发 CLI）
 
 ### 🔨 进行中（并行会话）
 
@@ -42,9 +47,9 @@
 
 ### 📋 待办（按 PLAN.md 路线）
 
-- [ ] **Phase 3+**：组合管理、基本面数据、AI 预测模型（只进 Opportunity/Risk 通道）、Research Agents、FastAPI Web + Tauri
+- [ ] **Phase 3 远期**：基本面数据 + fundamental_model、AI 预测模型（只进 Opportunity/Risk 通道）、Research Agents（信息报告无评分）、FastAPI Web + Tauri 桌面端
 - [ ] （低优先）Mimosa 完整安全审计补跑（钩子一直提示"扫描未完整"）
-- [ ] （低优先）指数输入扩展至 hk/us（恒生/标普500 代码验证）；Walk Forward 回测；scheduler 定时任务（当前用系统任务计划程序触发 CLI 即可）
+- [ ] （低优先）us 指数输入（需另找美股指数历史K渠道，ifzq 只有快照）；Walk Forward 回测（规则策略下价值有限，先缓）
 
 ## 开发日记
 
@@ -122,6 +127,13 @@ cargo test                                   # Rust 全量
 .venv/Scripts/python -m pytest tests/ -q     # Python 全量（离线）
 .venv/Scripts/python -m meridian.cli analyze --symbol 600519   # 分析（数据源失败自动回退）
 .venv/Scripts/python -m meridian.cli analyze --symbol 600519 --offline  # 纯离线
+.venv/Scripts/python -m meridian.cli analyze-all      # 批量分析标的池
+.venv/Scripts/python -m meridian.cli backtest --symbol 600519   # 单标的回测
+.venv/Scripts/python -m meridian.cli portfolio        # 组合分析
+.venv/Scripts/python -m meridian.cli daily            # 一条龙（定时任务入口）
+# Windows 定时调度（任务计划程序，示例：每交易日 18:00）：
+# schtasks /Create /TN MeridianDaily /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 18:00 ^
+#   /TR "cmd /c cd /d D:\Meridian && .venv\Scripts\python -m meridian.cli daily"
 NO_PROXY="*" .venv/Scripts/python scripts/probe_data_sources.py  # 数据渠道体检
 ```
 

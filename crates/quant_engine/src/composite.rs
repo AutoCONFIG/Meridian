@@ -163,7 +163,7 @@ impl CompositeEngine {
 
         for rule in &self.config.action_rules {
             match rule {
-                crate::config::ActionRule::Conditional { condition, then } => {
+                crate::config::ActionRule::Conditional { condition, then, position } => {
                     if condition.matches(opportunity, risk) {
                         rule_triggers.push(format!(
                             "{} → {}",
@@ -172,16 +172,16 @@ impl CompositeEngine {
                         ));
                         return ActionOutput {
                             action: *then,
-                            position_hint: None,
+                            position_hint: validated_position(*position),
                             rule_triggers,
                         };
                     }
                 }
-                crate::config::ActionRule::Default { default } => {
+                crate::config::ActionRule::Default { default, position } => {
                     rule_triggers.push(format!("兜底规则 → {}", default.as_str()));
                     return ActionOutput {
                         action: *default,
-                        position_hint: None,
+                        position_hint: validated_position(*position),
                         rule_triggers,
                     };
                 }
@@ -194,6 +194,14 @@ impl CompositeEngine {
             position_hint: None,
             rule_triggers,
         }
+    }
+}
+
+/// 仓位参考合法性：NaN/负数 → None；>1 收敛到 1。
+fn validated_position(p: Option<f64>) -> Option<f64> {
+    match p {
+        Some(v) if v.is_finite() && v > 0.0 => Some(v.min(1.0)),
+        _ => None,
     }
 }
 
@@ -228,8 +236,10 @@ weights:
 action_rules:
   - if: {opportunity_gte: 70, risk_lte: 40}
     then: Add
+    position: 1.0
   - if: {opportunity_lte: 40}
     then: Reduce
+    position: 0.25
   - if: {risk_gte: 65}
     then: Avoid
   - default: Watch
@@ -260,6 +270,7 @@ action_rules:
         assert_eq!(out.action.action, Action::Add);
         assert!(!out.action.rule_triggers.is_empty());
         assert!(out.action.rule_triggers[0].contains("Add"));
+        assert_eq!(out.action.position_hint, Some(1.0), "命中规则的仓位参考带出");
 
         // 机会通道 3 个模型各有一条因子，且 Σcontribution == 综合分
         assert_eq!(out.opportunity.factors.len(), 3);
@@ -293,8 +304,51 @@ action_rules:
     }
 
     #[test]
-    fn dumb_model_contributes_via_unknown_weight() {
-        struct DumbModel;
+    fn position_hint_validation_and_absence() {
+        // 非法仓位（NaN/负数）→ None；>1 收敛到 1；未配置的规则 → None
+        let engine = engine();
+        let mut cfg = engine.config().clone();
+        cfg.action_rules = vec![
+            crate::config::ActionRule::Conditional {
+                condition: crate::config::Condition {
+                    opportunity_gte: Some(10.0),
+                    ..Default::default()
+                },
+                then: Action::Add,
+                position: Some(1.7), // 越界 → 收敛 1.0
+            },
+            crate::config::ActionRule::Conditional {
+                condition: crate::config::Condition {
+                    opportunity_gte: Some(5.0),
+                    ..Default::default()
+                },
+                then: Action::Hold,
+                position: Some(f64::NAN), // 非法 → None
+            },
+            crate::config::ActionRule::Default { default: Action::Watch, position: None },
+        ];
+        let engine2 = CompositeEngine::new(cfg);
+
+        let fixture = testutil::uptrend_fixture(130);
+        let out = engine2.evaluate(&std_models(), &fixture.ctx()).unwrap();
+        assert_eq!(out.action.action, Action::Add);
+        assert_eq!(out.action.position_hint, Some(1.0));
+
+        let mut low = testutil::uptrend_fixture(130);
+        for b in &mut low.bars {
+            b.close /= 10.0;
+            b.open /= 10.0;
+            b.high /= 10.0;
+            b.low /= 10.0;
+        }
+        let out2 = engine2.evaluate(&std_models(), &low.ctx()).unwrap();
+        if out2.action.action == Action::Hold {
+            assert_eq!(out2.action.position_hint, None, "NaN 仓位 → None");
+        }
+    }
+
+    #[test]
+    fn dumb_model_contributes_via_unknown_weight() {        struct DumbModel;
         impl AnalysisModel for DumbModel {
             fn name(&self) -> &str {
                 "py_dummy_v1"
@@ -385,8 +439,7 @@ action_rules:
         };
 
         let out_unknown = engine.evaluate(&std_models(), &fixture_unknown.ctx()).unwrap();
-        let out_bear = engine.evaluate(&std_models(), &fixture_bear.ctx()).unwrap();
-        assert_ne!(out_unknown.opportunity.score, out_bear.opportunity.score);
+        let out_bear = engine.evaluate(&std_models(), &fixture_bear.ctx()).unwrap();        assert_ne!(out_unknown.opportunity.score, out_bear.opportunity.score);
     }
 
     #[test]

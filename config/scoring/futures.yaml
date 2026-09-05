@@ -15,11 +15,13 @@ weights:
   risk:
     default: { risk_model: 1.0 }
 
-action_rules:                       # (机会,风险)→建议，按序匹配，首条命中即生效
+action_rules:                       # (机会,风险)→建议，按序匹配，首条命中即生效；position=规则式仓位参考
   - if: { opportunity_gte: 75, risk_lte: 40 }
     then: Add
+    position: 1.0
   - if: { opportunity_gte: 50 }
     then: Hold
+    position: 0.5
   - if: { opportunity_gte: 35 }
     then: Watch
   - default: Avoid

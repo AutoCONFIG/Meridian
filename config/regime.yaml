@@ -14,3 +14,5 @@ volatility:
   atr_pct_high_vol: 0.025 # ATR/收盘 ≥ 此值 → 高波动
 index_input:            # regime 检测优先用市场指数K线；未配置的市场用标的自身K线代理
   cn: sh000300          # 沪深300（腾讯 ifzq 指数代码）
+  hk: hkHSI             # 恒生指数（实测 ifzq fqkline 有日K）
+  # us 不配置：ifzq 对美股指数量K仅返回实时快照（day 为空，2026-09-05 实测），维持标的自身K线代理

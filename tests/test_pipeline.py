@@ -401,6 +401,105 @@ def test_ai_summary_rendered_with_disclaimer(tmp_path):
     assert "## AI 摘要" not in result.to_markdown()
 
 
+# ---- 组合分析（Phase 3：集中度/相关性/风险暴露/规则仓位）----
+
+
+def _pipeline_with_two_bars(tmp_path):
+    """内存库灌一涨一跌两个标的（日收益率严格互为相反数），供组合分析离线使用。"""
+    from conftest import make_uptrend_frame
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    db = pipeline._db
+
+    up = make_uptrend_frame(130)
+    closes = up["close"].tolist()
+    rets = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+    inv = [100.0]
+    for r in rets:
+        inv.append(inv[-1] * (1 - r))  # 收益率取反 → 与 600519 严格负相关
+
+    dates = [str(d) for d in up["date"]]
+    db.insert_bars(
+        symbol="300750", name="宁德时代", market="cn", asset_type="stock", frequency="daily",
+        dates=dates,
+        opens=[c + 0.5 for c in inv], highs=[c + 1.0 for c in inv],
+        lows=[c - 1.0 for c in inv], closes=inv,
+        volumes=[5e5] * len(inv), amounts=[float("nan")] * len(inv),
+    )
+    return pipeline
+
+
+def test_portfolio_analyze_concentration_and_correlation(tmp_path):
+    """等权两只（一涨一跌）：HHI=0.5、相关性强负、风险暴露=均值、字段齐全。"""
+    from meridian.portfolio import PortfolioAnalyzer
+
+    pipeline = _pipeline_with_two_bars(tmp_path)
+    out = PortfolioAnalyzer(pipeline).analyze(["600519", "300750"])
+
+    assert len(out["rows"]) == 2
+    assert abs(out["concentration_hhi"] - 0.5) < 1e-9, "等权两只 HHI 应为 0.5"
+    assert out["effective_holdings"] == 2.0
+    corr = out["correlation"]
+    assert abs(corr.loc["600519", "600519"] - 1.0) < 1e-9
+    assert corr.loc["600519", "300750"] < -0.9, "一涨一跌镜像序列应强负相关"
+    assert 0 <= out["risk_exposure"] <= 100
+    assert 0 <= out["position_suggestion"] <= 1.0
+
+
+def test_portfolio_explicit_weights_from_config(tmp_path, monkeypatch):
+    """config/portfolio.yaml holdings → 显式权重参与 HHI 与仓位建议。"""
+    from meridian import portfolio as pf_mod
+    from meridian.portfolio import PortfolioAnalyzer
+
+    pipeline = _pipeline_with_two_bars(tmp_path)
+    monkeypatch.setattr(pf_mod, "load_portfolio_weights", lambda root: {"600519": 3.0, "300750": 1.0})
+
+    out = PortfolioAnalyzer(pipeline).analyze(["600519", "300750"])
+
+    w = {r.symbol: r.weight for r in out["rows"]}
+    assert abs(w["600519"] - 0.75) < 1e-9 and abs(w["300750"] - 0.25) < 1e-9
+    assert abs(out["concentration_hhi"] - (0.75**2 + 0.25**2)) < 1e-9
+
+
+def test_render_portfolio_report(tmp_path):
+    """组合报告渲染：持仓表 + 相关性矩阵 + 高相关对提示。"""
+    from meridian.cli import render_portfolio_report
+    from meridian.portfolio import PortfolioAnalyzer
+
+    pipeline = _pipeline_with_two_bars(tmp_path)
+    out = PortfolioAnalyzer(pipeline).analyze(["600519", "300750"])
+
+    text = render_portfolio_report(out)
+    assert "| 600519 |" in text and "| 300750 |" in text
+    assert "集中度 HHI" in text and "规则仓位建议" in text
+    # 镜像序列强负相关（≈-1），不应触发 >0.7 高相关提示
+    assert "同涨同跌风险大" not in text
+
+
+def test_daily_command_invokes_all_steps(monkeypatch):
+    """daily 一条龙：依次调用 analyze-all / portfolio / ledger 三步并取最大退出码。"""
+    from meridian import cli as cli_mod
+
+    calls = []
+
+    def fake(name, rc):
+        def _cmd(_args):
+            calls.append(name)
+            return rc
+        return _cmd
+
+    monkeypatch.setattr(cli_mod, "cmd_analyze_all", fake("all", 0))
+    monkeypatch.setattr(cli_mod, "cmd_portfolio", fake("pf", 0))
+    monkeypatch.setattr(cli_mod, "cmd_ledger", fake("led", 0))
+
+    rc = cli_mod.main(["daily"])
+    assert calls == ["all", "pf", "led"] and rc == 0
+
+    calls.clear()
+    monkeypatch.setattr(cli_mod, "cmd_analyze_all", fake("all", 1))
+    assert cli_mod.main(["daily"]) == 1, "任一步失败 → 退出码取最大"
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

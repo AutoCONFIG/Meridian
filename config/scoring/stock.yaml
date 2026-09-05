@@ -15,14 +15,16 @@ weights:
   risk:
     default: { risk_model: 1.0 }
 
-action_rules:                       # (机会,风险)→建议，按序匹配，首条命中即生效
+action_rules:                       # (机会,风险)→建议，按序匹配，首条命中即生效；position=规则式仓位参考
   - if: { opportunity_gte: 75, risk_lte: 40 }
     then: Add
+    position: 1.0                   # 满仓
   - if: { opportunity_gte: 50 }
     then: Hold
+    position: 0.5                   # 半仓持有
   - if: { opportunity_gte: 35 }
     then: Watch
-  - default: Avoid
+  - default: Avoid                  # Avoid 不带 position = 清仓观望
 
 # 未在权重表登记的模型（如 Python 哑模型）使用的默认权重，保证其贡献可见
 unknown_model_weight: 0.2

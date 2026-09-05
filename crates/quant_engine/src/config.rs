@@ -74,6 +74,8 @@ impl Condition {
 }
 
 /// 单条 action 规则：`if` + `then`，或 `default` 兜底。
+/// `position`（可选）= 规则式仓位参考 [0,1]（Phase 3）：命中即带出，写入
+/// ActionOutput.position_hint——纯规则产物，AI 不可干预（红线 1）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ActionRule {
@@ -81,9 +83,13 @@ pub enum ActionRule {
         #[serde(rename = "if")]
         condition: Condition,
         then: Action,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<f64>,
     },
     Default {
         default: Action,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<f64>,
     },
 }
 
@@ -169,8 +175,9 @@ action_rules:
                 risk_lte: Some(40.0),
             },
             then: Action::Add,
+            position: None,
         });
-        assert_eq!(cfg.action_rules[3], ActionRule::Default { default: Action::Avoid });
+        assert_eq!(cfg.action_rules[3], ActionRule::Default { default: Action::Avoid, position: None });
         assert_eq!(cfg.unknown_model_weight, 0.2);
     }
 

@@ -57,6 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_backtest.add_argument("--offline", action="store_true", help="离线模式：只用本地 DuckDB 数据")
     p_backtest.add_argument("--out", default=None, help="报告输出路径（缺省 reports/backtest_<symbol>_<date>.md）")
 
+    p_daily = sub.add_parser("daily", help="日常一条龙：analyze-all + portfolio + 台账导出（定时任务入口）")
+    p_daily.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD")
+    p_daily.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD")
+    p_daily.add_argument("--no-persist", action="store_true", help="不写入本地 DuckDB")
+    p_daily.add_argument("--offline", action="store_true", help="离线模式")
+
+    p_portfolio = sub.add_parser("portfolio", help="组合分析：集中度/相关性/风险暴露/规则仓位（离线读本地库）")
+    p_portfolio.add_argument("--symbols", default=None, help="逗号分隔的标的列表（缺省用标的池）")
+    p_portfolio.add_argument("--market", default=None, help="只看某市场（cn/hk/us，仅标的池模式有效）")
+
     p_ledger = sub.add_parser("ledger", help="导出决策台账（做账文档）：系统建议留痕 + 人工操作对照")
     p_ledger.add_argument("--symbol", default=None, help="只看某标的")
     p_ledger.add_argument("--market", default=None, help="只看某市场（cn/hk/us）")
@@ -283,6 +293,105 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def render_portfolio_report(out: dict) -> str:
+    """组合分析 → markdown（持仓表 + 相关性矩阵 + 组合指标）。"""
+    rows = out["rows"]
+    corr = out["correlation"]
+    lines = [
+        "# Meridian 组合分析",
+        "",
+        "| 代码 | 名称 | 市场 | 权重 | 状态 | 机会 | 风险 | 建议 | 规则仓位 |",
+        "| --- | --- | --- | ---: | --- | ---: | ---: | --- | ---: |",
+    ]
+    for r in rows:
+        hint = "—" if r.position_hint is None else f"{r.position_hint:.0%}"
+        lines.append(
+            f"| {r.symbol} | {r.name} | {r.market} | {r.weight:.0%} | {r.regime} "
+            f"| {r.opportunity:.1f} | {r.risk:.1f} | **{r.action}** | {hint} |"
+        )
+    hhi = out["concentration_hhi"]
+    lines += [
+        "",
+        "## 组合指标",
+        "",
+        f"- **集中度 HHI**：{hhi:.3f}（有效持仓数 ≈ {out['effective_holdings']}；"
+        f"{'≥0.5 偏集中，考虑分散' if hhi >= 0.5 else '较分散'}）",
+        f"- **风险暴露**：加权平均风险分 {out['risk_exposure']:.1f}/100"
+        + ("（>65 高暴露，规则建议整体降仓）" if out["risk_exposure"] > 65 else ""),
+        f"- **规则仓位建议**：组合加权 {out['position_suggestion']:.0%}"
+        + ("（来自各标的 position_hint × 权重；未配置 position 的标的两脚计入 0）" if out["weights_configured"] else ""),
+        "",
+        "## 收益率相关性（近 120 交易日）",
+        "",
+    ]
+    syms = list(corr.columns)
+    header = "| | " + " | ".join(syms) + " |"
+    sep = "| --- |" + " ---: |" * len(syms)
+    lines.append(header)
+    lines.append(sep)
+    for s in syms:
+        cells = " | ".join(f"{corr.loc[s, t]:+.2f}" for t in syms)
+        lines.append(f"| {s} | {cells} |")
+    pairs = [
+        (syms[i], syms[j], corr.loc[syms[i], syms[j]])
+        for i in range(len(syms)) for j in range(i + 1, len(syms))
+    ]
+    high = [p for p in pairs if p[2] > 0.7]
+    if high:
+        lines += ["", "**高相关对（>0.7，同涨同跌风险大，注意分散）**："]
+        lines += [f"- {a} ↔ {b}：{c:+.2f}" for a, b, c in high]
+    lines += [
+        "",
+        "---",
+        "",
+        "本报告由规则引擎自动生成，仅供参考，不构成投资建议。",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_portfolio(args: argparse.Namespace) -> int:
+    from meridian.config import AppConfig
+    from meridian.orchestrator.pipeline import AnalysisPipeline
+    from meridian.portfolio import PortfolioAnalyzer
+
+    pipeline = AnalysisPipeline(persist=True)
+    symbols = args.symbols.split(",") if args.symbols else None
+    out = PortfolioAnalyzer(pipeline).analyze(symbols=symbols, market=args.market)
+
+    report = render_portfolio_report(out)
+    today = date.today().isoformat()
+    path = AppConfig.load().report_dir / f"portfolio_{today}.md"
+    path.write_text(report, encoding="utf-8")
+
+    for r in out["rows"]:
+        hint = "—" if r.position_hint is None else f"{r.position_hint:.0%}"
+        print(f"{r.symbol:<10}{r.name:<12}权重 {r.weight:>5.0%}  风险 {r.risk:>5.1f}  {r.action:<7} 仓位 {hint}")
+    print(
+        f"\nHHI {out['concentration_hhi']:.3f}（有效持仓 {out['effective_holdings']}）"
+        f"，风险暴露 {out['risk_exposure']:.1f}/100，组合仓位建议 {out['position_suggestion']:.0%}"
+    )
+    print(f"报告已写入: {path}")
+    return 0
+
+
+def cmd_daily(args: argparse.Namespace) -> int:
+    """日常一条龙（定时任务入口）：批量分析 → 组合分析 → 台账导出。
+
+    调度由系统任务计划程序/cron 触发本命令（见 DEVLOG「常用命令」）。
+    """
+    ns_all = argparse.Namespace(
+        start=args.start, end=args.end, market=None,
+        no_persist=args.no_persist, offline=args.offline,
+    )
+    ns_pf = argparse.Namespace(symbols=None, market=None)
+    ns_led = argparse.Namespace(symbol=None, market=None, format="md", limit=500, out=None)
+
+    rc1 = cmd_analyze_all(ns_all)
+    rc2 = cmd_portfolio(ns_pf)
+    rc3 = cmd_ledger(ns_led)
+    return max(rc1, rc2, rc3)
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     from meridian.config import AppConfig
     from meridian.ledger import open_ledger
@@ -332,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
         "analyze": cmd_analyze,
         "analyze-all": cmd_analyze_all,
         "backtest": cmd_backtest,
+        "portfolio": cmd_portfolio,
+        "daily": cmd_daily,
         "ledger": cmd_ledger,
         "journal": cmd_journal,
     }
