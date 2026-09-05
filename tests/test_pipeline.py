@@ -358,6 +358,49 @@ def test_render_backtest_report(tmp_path):
     assert f"charts/backtest_600519_{out['dates'][-1]}.png" in text
 
 
+# ---- LLM Summary Agent（AI 转译摘要；不碰分数/action——红线 1/2）----
+
+
+def test_summary_agent_disabled_without_env():
+    """环境变量未配置 → 未启用，summarize 恒 None（不发网络请求）。"""
+    from meridian.summary_agent import SummaryAgent
+
+    agent = SummaryAgent.from_env()
+    assert not agent.enabled
+    assert agent.summarize("任意报告") is None
+
+
+def test_summary_agent_failure_degrades(monkeypatch):
+    """LLM 调用失败 → 返回 None，不抛异常（摘要属增强项）。"""
+    import pytest
+
+    from meridian import summary_agent as sa
+
+    def boom(cfg, system, user):
+        raise RuntimeError("模拟 LLM 断连")
+
+    monkeypatch.setattr(sa, "chat_completion", boom)
+    cfg = sa.LlmConfig("https://example.invalid", "k", "m")
+    assert sa.SummaryAgent(cfg).summarize("报告") is None
+
+
+def test_ai_summary_rendered_with_disclaimer(tmp_path):
+    """带 ai_summary 的报告：摘要在结论后、评分前，且带免责引用。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+    result.ai_summary = "（AI 转译）规则建议 Watch，主要因大盘下行、个股回撤深。"
+
+    report = result.to_markdown()
+
+    assert "## AI 摘要" in report and "（AI 转译）" in report
+    assert report.index("## 结论") < report.index("## AI 摘要") < report.index("## 三层评分")
+    assert "不产生新的评分或建议" in report
+
+    # 无摘要时不渲染该节
+    result.ai_summary = None
+    assert "## AI 摘要" not in result.to_markdown()
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

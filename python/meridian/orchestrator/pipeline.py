@@ -86,6 +86,7 @@ class AnalysisResult:
     regime_confidence: float = 0.0  # regime 置信度（Unknown 时为 0）
     regime_basis: list[str] = field(default_factory=list)  # 判定依据（人话，报告展示）
     regime_detector: str = ""  # 检测器名（可追溯）
+    ai_summary: str | None = None  # LLM 转译摘要（解释性文本；无评分无新建议——红线 1/2）
 
     # ---- 视图便捷属性 ----
     @property
@@ -126,6 +127,15 @@ class AnalysisResult:
         if chart_image:
             lines += [f"![{self.name} ({self.symbol}) K线图]({chart_image})", ""]
         lines += self._summary_lines()
+        if self.ai_summary:
+            lines += [
+                "## AI 摘要",
+                "",
+                self.ai_summary,
+                "",
+                "> 本节由 LLM 转译规则报告，仅解释已有内容，不产生新的评分或建议。",
+                "",
+            ]
         lines += [
             "## 三层评分",
             "",
