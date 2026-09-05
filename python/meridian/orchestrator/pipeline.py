@@ -504,6 +504,33 @@ class AnalysisPipeline:
         except Exception as exc:  # noqa: BLE001
             warnings.warn(f"regime_history 写入失败（本次检测未留痕）: {exc}")
 
+    def analyze_universe(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        offline: bool = False,
+        market: str | None = None,
+    ) -> tuple[list[AnalysisResult], list[tuple[str, str, str]]]:
+        """批量分析标的池（market=None 全部市场）。
+
+        单标的失败（无数据/数据不足等）记入 failures 不挡其余——批量场景下
+        个别标的缺数据是常态。返回 (results, failures)，failures 元素为
+        (symbol, name, 错误信息)。
+        """
+        results: list[AnalysisResult] = []
+        failures: list[tuple[str, str, str]] = []
+        for entry in self.markets_cfg.markets:
+            if market and entry.market != market:
+                continue
+            for sym in entry.symbols:
+                try:
+                    results.append(
+                        self.analyze(sym.symbol, start=start, end=end, offline=offline, name=sym.name)
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 批量场景单标的失败不挡其余
+                    failures.append((sym.symbol, sym.name, str(exc)))
+        return results, failures
+
     def _record_ledger(self, result: AnalysisResult) -> None:
         """决策台账留痕（做账）：每次成功分析 append-only 追加一条系统建议。
 

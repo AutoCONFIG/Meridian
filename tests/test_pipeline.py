@@ -268,6 +268,33 @@ def test_regime_offline_never_fetches_index(tmp_path):
     assert result.regime == "Bull"
 
 
+# ---- 批量分析（analyze-all）----
+
+
+def test_analyze_universe_skips_failures(tmp_path):
+    """批量分析：池内有数据的标的成功，无数据的记入 failures 不挡其余。"""
+    pipeline = _pipeline_with_regime(tmp_path)  # 内存库只灌了 600519
+
+    results, failures = pipeline.analyze_universe(offline=True)
+
+    assert [r.symbol for r in results] == ["600519"]
+    assert failures, "池内其他标的应因无数据失败"
+    assert all(len(f) == 3 for f in failures)
+
+
+def test_render_summary_table(tmp_path):
+    """汇总表渲染：每标的一行 + 失败清单。"""
+    from meridian.cli import render_summary
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    text = render_summary([result], [("00700", "腾讯控股", "无数据")])
+    assert f"| {result.symbol} | {result.name} |" in text
+    assert "下行" in text or "上行" in text or "震荡" in text  # regime 中文
+    assert "- 00700 腾讯控股：无数据" in text
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

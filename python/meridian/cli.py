@@ -3,6 +3,7 @@
 用法：
     meridian analyze --symbol 600519 [--start 2026-01-01] [--end 2026-08-31]
                      [--output report.md] [--no-persist] [--offline]
+    meridian analyze-all [--market cn] [--start ...] [--end ...] [--offline]
     meridian ledger   [--symbol 600519] [--market cn] [--format md|csv|trades]
                       [--limit 200] [--out path]
     meridian journal  --symbol 600519 --side buy [--quantity 100] [--price 1299.0]
@@ -35,6 +36,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--output", default=None, help="Markdown 输出路径（缺省打印到 stdout，同时写入 reports/）")
     p_analyze.add_argument("--no-persist", action="store_true", help="不写入本地 DuckDB（也不留痕决策台账）")
     p_analyze.add_argument(
+        "--offline", action="store_true", help="离线模式：跳过数据源，直接读本地 DuckDB 缓存"
+    )
+
+    p_analyze_all = sub.add_parser("analyze-all", help="批量分析标的池全部标的：每标的出报告 + 汇总表")
+    p_analyze_all.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD（默认近 240 自然日）")
+    p_analyze_all.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（默认昨日）")
+    p_analyze_all.add_argument("--market", default=None, help="只分析某市场（cn/hk/us，缺省全部）")
+    p_analyze_all.add_argument("--no-persist", action="store_true", help="不写入本地 DuckDB（也不留痕）")
+    p_analyze_all.add_argument(
         "--offline", action="store_true", help="离线模式：跳过数据源，直接读本地 DuckDB 缓存"
     )
 
@@ -82,6 +92,55 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def render_summary(results, failures) -> str:
+    """批量分析汇总（markdown 表）。"""
+    from meridian.orchestrator.pipeline import _REGIME_LABEL
+
+    lines = [
+        "# Meridian 标的池汇总",
+        "",
+        "| 代码 | 名称 | 市场 | 状态 | 机会 | 风险 | 建议 |",
+        "| --- | --- | --- | --- | ---: | ---: | --- |",
+    ]
+    for r in results:
+        lines.append(
+            f"| {r.symbol} | {r.name} | {r.market} | {_REGIME_LABEL.get(r.regime, r.regime)} "
+            f"| {r.opportunity:.1f} | {r.risk:.1f} | **{r.action}** |"
+        )
+    if failures:
+        lines += ["", f"## 失败（{len(failures)} 个，不挡批量）", ""]
+        lines += [f"- {s} {n}：{reason}" for s, n, reason in failures]
+    lines += ["", "本表由规则引擎生成，仅供参考，不构成投资建议。"]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_analyze_all(args: argparse.Namespace) -> int:
+    from meridian.config import AppConfig
+    from meridian.orchestrator.pipeline import AnalysisPipeline
+
+    pipeline = AnalysisPipeline(persist=not args.no_persist)
+    results, failures = pipeline.analyze_universe(
+        start=args.start, end=args.end, offline=args.offline, market=args.market
+    )
+    for r in results:
+        pipeline.write_report(r)
+
+    today = date.today().isoformat()
+    out = AppConfig.load().report_dir / f"summary_{today}.md"
+    out.write_text(render_summary(results, failures), encoding="utf-8")
+
+    print(f"{'代码':<10}{'名称':<12}{'市场':<5}{'状态':<6}{'机会':>7}{'风险':>7}  建议")
+    for r in results:
+        from meridian.orchestrator.pipeline import _REGIME_LABEL
+
+        regime = _REGIME_LABEL.get(r.regime, r.regime)
+        print(f"{r.symbol:<10}{r.name:<12}{r.market:<5}{regime:<6}{r.opportunity:>7.1f}{r.risk:>7.1f}  {r.action}")
+    for s, n, reason in failures:
+        print(f"{s:<10}{n:<12}—— 失败: {reason}")
+    print(f"\n汇总已写入: {out}（成功 {len(results)}，失败 {len(failures)}）")
+    return 0 if results else 1
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     from meridian.config import AppConfig
     from meridian.ledger import open_ledger
@@ -127,7 +186,12 @@ def cmd_journal(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handlers = {"analyze": cmd_analyze, "ledger": cmd_ledger, "journal": cmd_journal}
+    handlers = {
+        "analyze": cmd_analyze,
+        "analyze-all": cmd_analyze_all,
+        "ledger": cmd_ledger,
+        "journal": cmd_journal,
+    }
     try:
         return handlers[args.command](args)
     except Exception as exc:  # noqa: BLE001 —— CLI 边界统一转退出码
