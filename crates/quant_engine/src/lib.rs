@@ -46,7 +46,7 @@ pub(crate) mod testutil {
         pub fn ctx(&self) -> meridian_core::AnalysisContext<'_> {
             meridian_core::AnalysisContext {
                 asset: &self.asset,
-                regime: self.regime,
+                regime: self.regime.clone(),
                 bars: &self.bars,
                 indicators: &self.snapshot,
             }

@@ -381,6 +381,7 @@ action_rules:
         fixture_bear.regime = RegimeState {
             regime: Regime::Bear,
             confidence: 0.9,
+            basis: Vec::new(),
         };
 
         let out_unknown = engine.evaluate(&std_models(), &fixture_unknown.ctx()).unwrap();

@@ -83,8 +83,6 @@ class AppConfig:
 class SymbolEntry:
     symbol: str
     name: str
-
-
 @dataclass(frozen=True)
 class MarketEntry:
     market: str
@@ -178,4 +176,42 @@ class DataSourceConfig:
             default=str(raw.get("default", "akshare")),
             sources=dict(raw.get("sources", {})),
             extra={k: v for k, v in raw.items() if k not in ("default", "sources")},
+        )
+
+
+@dataclass(frozen=True)
+class RegimeConfig:
+    """config/regime.yaml：市场状态检测阈值（trend_vol_v1）。
+
+    缺失文件时用默认值——与 Rust RegimeThresholds::default 一致；
+    该文件属增强配置，不存在不应挡死分析管线。
+    """
+
+    trend_ma_fast: int = 20
+    trend_ma_slow: int = 60
+    trend_band: float = 0.03
+    drawdown_window: int = 20
+    crisis_drawdown: float = 0.10
+    atr_period: int = 14
+    atr_pct_crisis: float = 0.035
+    atr_pct_high_vol: float = 0.025
+
+    @classmethod
+    def load(cls, root: Path | None = None) -> "RegimeConfig":
+        root = root or _project_root()
+        path = root / "config" / "regime.yaml"
+        if not path.exists():
+            return cls()
+        raw = _load_yaml(path)
+        trend, dd = raw.get("trend", {}) or {}, raw.get("drawdown", {}) or {}
+        vol = raw.get("volatility", {}) or {}
+        return cls(
+            trend_ma_fast=int(trend.get("ma_fast", 20)),
+            trend_ma_slow=int(trend.get("ma_slow", 60)),
+            trend_band=float(trend.get("band", 0.03)),
+            drawdown_window=int(dd.get("window", 20)),
+            crisis_drawdown=float(dd.get("crisis", 0.10)),
+            atr_period=int(vol.get("atr_period", 14)),
+            atr_pct_crisis=float(vol.get("atr_pct_crisis", 0.035)),
+            atr_pct_high_vol=float(vol.get("atr_pct_high_vol", 0.025)),
         )

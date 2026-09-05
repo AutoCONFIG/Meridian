@@ -178,6 +178,7 @@ impl PyEngine {
             regime: meridian_core::RegimeState {
                 regime: regime_parsed,
                 confidence: if regime_parsed == Regime::Unknown { 0.0 } else { 0.9 },
+                basis: Vec::new(),
             },
             bars: &bars,
             indicators: &meridian_indicators::build_snapshot(&bars),
@@ -464,5 +465,68 @@ impl PyDb {
                 })
             })
             .collect::<PyResult<Vec<_>>>()?)
+    }
+
+    /// 写市场状态快照（regime_history，append-only）。返回流水 id。
+    #[pyo3(signature = (ts, symbol, name, market, asset_type, frequency,
+                        regime, confidence, basis, detector))]
+    #[allow(clippy::too_many_arguments)]
+    fn insert_regime_history(
+        &self,
+        ts: &str,
+        symbol: &str,
+        name: &str,
+        market: &str,
+        asset_type: &str,
+        frequency: &str,
+        regime: &str,
+        confidence: f64,
+        basis: Vec<String>,
+        detector: &str,
+    ) -> PyResult<i64> {
+        let asset = asset_from_parts(symbol, name, market, asset_type, frequency)?;
+        let state = meridian_core::RegimeState {
+            regime: regime
+                .parse::<meridian_core::Regime>()
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+            confidence,
+            basis,
+        };
+        self.db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .insert_regime_state(ts, &asset, &state, detector)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    }
+
+    /// 某标的最新一条 regime 快照 → dict 或 None。
+    #[pyo3(signature = (market, symbol))]
+    fn latest_regime_history(
+        &self,
+        market: &str,
+        symbol: &str,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let row = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .latest_regime(market, symbol)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        match row {
+            None => Ok(None),
+            Some(r) => pyo3::Python::attach(|py| {
+                let d = pyo3::types::PyDict::new(py);
+                d.set_item("id", r.id)?;
+                d.set_item("ts", r.ts)?;
+                d.set_item("symbol", r.symbol)?;
+                d.set_item("name", r.name)?;
+                d.set_item("market", r.market)?;
+                d.set_item("regime", r.regime)?;
+                d.set_item("confidence", r.confidence)?;
+                d.set_item("basis", r.basis)?;
+                d.set_item("detector", r.detector)?;
+                Ok(Some(d.into_any().unbind()))
+            }),
+        }
     }
 }

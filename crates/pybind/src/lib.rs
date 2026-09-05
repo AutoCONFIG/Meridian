@@ -2,6 +2,7 @@
 //!
 //! - `py_model`：PyAnalysisModel——Python 模型 → Rust AnalysisModel 桥接
 //! - `py_engine`：PyEngine（三层评分门面）+ PyDb（DuckDB 读写门面）
+//! - `py_regime`：PyRegimeDetector（市场状态检测门面）
 //! - `conversions`：Rust ↔ Python 类型转换
 //!
 //! 注：PLAN.md 原列 lib.rs / py_model.rs / conversions.rs 三个文件；
@@ -10,6 +11,7 @@
 mod conversions;
 mod py_engine;
 mod py_model;
+mod py_regime;
 
 use pyo3::prelude::*;
 
@@ -25,6 +27,7 @@ fn meridian_core_version() -> String {
 fn meridian_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEngine>()?;
     m.add_class::<PyDb>()?;
+    m.add_class::<py_regime::PyRegimeDetector>()?;
     m.add_function(wrap_pyfunction!(meridian_core_version, m)?)?;
     Ok(())
 }

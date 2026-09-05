@@ -78,4 +78,22 @@ CREATE TABLE IF NOT EXISTS trade_journal (
     ledger_id  BIGINT,
     PRIMARY KEY (id)
 );
+
+-- 市场状态快照（append-only）：每次分析时的 regime 判定，basis_json 为人话判定依据
+-- （对应 RegimeState.basis），detector 记录检测器名+可复现。一期输入为标的自身K线（代理），
+-- 后续接指数渠道后同一张表直接复用。
+CREATE TABLE IF NOT EXISTS regime_history (
+    id         BIGINT    NOT NULL,
+    ts         TIMESTAMP NOT NULL,
+    symbol     VARCHAR NOT NULL,
+    name       VARCHAR NOT NULL,
+    market     VARCHAR NOT NULL,
+    asset_type VARCHAR NOT NULL,
+    frequency  VARCHAR NOT NULL,
+    regime     VARCHAR NOT NULL,
+    confidence DOUBLE  NOT NULL,
+    basis_json VARCHAR NOT NULL,
+    detector   VARCHAR NOT NULL,
+    PRIMARY KEY (id)
+);
 "#;

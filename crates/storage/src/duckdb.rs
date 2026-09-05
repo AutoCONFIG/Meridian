@@ -51,6 +51,20 @@ pub struct TradeRow {
     pub ledger_id: Option<i64>,
 }
 
+/// 市场状态快照行（regime_history）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegimeRow {
+    pub id: i64,
+    pub ts: String, // %Y-%m-%d %H:%M:%S
+    pub symbol: String,
+    pub name: String,
+    pub market: String,
+    pub regime: String,
+    pub confidence: f64,
+    pub basis: Vec<String>,
+    pub detector: String,
+}
+
 /// 时间戳解析：接受 "YYYY-MM-DD HH:MM:SS" 与 ISO "T" 分隔两种写法。
 fn parse_ts(s: &str) -> Result<chrono::NaiveDateTime> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
@@ -301,6 +315,86 @@ impl MeridianDb {
     /// 只存评分标量（opportunity / risk / action / triggers）—— 因子明细由
     /// `insert_composite_score` 落 trend_scores，台账负责审计留痕不负责因子复现。
     #[allow(clippy::too_many_arguments)]
+    /// 写市场状态快照（regime_history，append-only）。返回分配的 id。
+    pub fn insert_regime_state(
+        &self,
+        ts: &str,
+        asset: &Asset,
+        state: &meridian_core::RegimeState,
+        detector: &str,
+    ) -> Result<i64> {
+        let id: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM regime_history",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| MeridianError::Storage(format!("分配 regime_history id 失败: {e}")))?;
+        let basis_json = serde_json::to_string(&state.basis)
+            .map_err(|e| MeridianError::Storage(format!("序列化 regime basis 失败: {e}")))?;
+        self.conn
+            .execute(
+                "INSERT INTO regime_history
+                    (id, ts, symbol, name, market, asset_type, frequency,
+                     regime, confidence, basis_json, detector)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id,
+                    parse_ts(ts)?,
+                    asset.symbol,
+                    asset.name,
+                    asset.market.as_str(),
+                    asset.asset_type.as_str(),
+                    asset.frequency.as_str(),
+                    state.regime.as_str(),
+                    state.confidence,
+                    basis_json,
+                    detector,
+                ],
+            )
+            .map_err(|e| MeridianError::Storage(format!("写入 regime_history 失败: {e}")))?;
+        Ok(id)
+    }
+
+    /// 某标的最新一条 regime 快照（无则 None）。
+    pub fn latest_regime(&self, market: &str, symbol: &str) -> Result<Option<RegimeRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, strftime(ts, '%Y-%m-%d %H:%M:%S'), symbol, name, market,
+                        regime, confidence, basis_json, detector
+                 FROM regime_history
+                 WHERE market = ?1 AND symbol = ?2
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .map_err(|e| MeridianError::Storage(format!("准备 regime_history 查询失败: {e}")))?;
+        let mut rows = stmt
+            .query(params![market, symbol])
+            .map_err(|e| MeridianError::Storage(format!("查询 regime_history 失败: {e}")))?;
+        match rows.next() {
+            Ok(None) => Ok(None),
+            Ok(Some(row)) => {
+                let basis_json: String = row
+                    .get(7)
+                    .map_err(|e| MeridianError::Storage(format!("读取 basis_json 失败: {e}")))?;
+                Ok(Some(RegimeRow {
+                    id: row.get(0).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    ts: row.get(1).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    symbol: row.get(2).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    name: row.get(3).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    market: row.get(4).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    regime: row.get(5).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    confidence: row.get(6).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    basis: serde_json::from_str(&basis_json).unwrap_or_default(),
+                    detector: row.get(8).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                }))
+            }
+            Err(e) => Err(MeridianError::Storage(format!("读取 regime_history 失败: {e}"))),
+        }
+    }
+
+    /// 决策台账：每次分析 append-only 追加一条系统建议。
     pub fn insert_ledger_entry(
         &self,
         ts: &str,
@@ -663,6 +757,42 @@ action_rules:
 
     fn ts_at(day: u32, hms: &str) -> String {
         format!("2026-09-{day:02} {hms}")
+    }
+
+    #[test]
+    fn regime_history_roundtrip() {
+        use meridian_core::{Regime, RegimeState};
+
+        let db = MeridianDb::open_in_memory().unwrap();
+        let a = asset();
+        let bear = RegimeState {
+            regime: Regime::Bear,
+            confidence: 0.85,
+            basis: vec![
+                "MA20/MA60 = 10.00/11.00，收盘偏离慢线 -9.1%".to_string(),
+                "20日内自高点回撤 -12.3%".to_string(),
+            ],
+        };
+
+        let id1 = db
+            .insert_regime_state(&ts_at(3, "09:30:00"), &a, &bear, "trend_vol_v1")
+            .unwrap();
+        let id2 = db
+            .insert_regime_state(&ts_at(4, "09:30:00"), &a, &RegimeState::unknown(), "trend_vol_v1")
+            .unwrap();
+        assert_eq!((id1, id2), (1, 2), "append-only 顺序 id");
+
+        // 最新一条（id2，Unknown），basis 完整读回
+        let latest = db.latest_regime("cn", "600519").unwrap().expect("应有记录");
+        assert_eq!(latest.id, 2);
+        assert_eq!(latest.regime, "Unknown");
+        assert_eq!(latest.confidence, 0.0);
+        assert_eq!(latest.detector, "trend_vol_v1");
+        assert_eq!(latest.name, a.name);
+
+        // market/symbol 隔离
+        assert!(db.latest_regime("hk", "600519").unwrap().is_none());
+        assert!(db.latest_regime("cn", "300750").unwrap().is_none());
     }
 
     fn score_scalars(score: &CompositeScore) -> (f64, f64, &str, Option<f64>, Vec<String>) {

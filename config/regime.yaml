@@ -1,0 +1,14 @@
+# 市场状态检测（RegimeDetector trend_vol_v1）阈值。
+# 语义与默认值与 Rust RegimeThresholds::default 一致；缺失本文件时用同一组默认。
+# 判定优先级：Crisis（急跌+高波动同时成立）> Bear/Bull（趋势成立）> HighVol > Sideways。
+trend:
+  ma_fast: 20
+  ma_slow: 60
+  band: 0.03            # 收盘相对慢线偏离绝对值低于此 → 趋势不成立
+drawdown:
+  window: 20            # 急跌观察窗（日）
+  crisis: 0.10          # 窗内高点回撤 ≥ 此值 → 危机候选
+volatility:
+  atr_period: 14
+  atr_pct_crisis: 0.035 # ATR/收盘 ≥ 此值 → 波动确认危机
+  atr_pct_high_vol: 0.025 # ATR/收盘 ≥ 此值 → 高波动

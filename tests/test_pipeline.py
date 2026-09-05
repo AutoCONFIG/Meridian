@@ -125,6 +125,77 @@ def test_pipeline_adhoc_symbol_out_of_universe(tmp_path):
     assert result.market == "cn" and result.asset_type == "stock"
 
 
+# ---- Phase 1：市场状态检测（regime）----
+
+
+def _pipeline_with_regime(tmp_path, persist=False) -> AnalysisPipeline:
+    """同 test_ledger 模式：CSV 合成源 + 预灌内存库（离线分析走 cache 路径，
+    不碰真实 data/ 库文件，避免与其他进程的 DuckDB 文件锁冲突）。"""
+    from conftest import make_uptrend_frame
+
+    pipeline = AnalysisPipeline(
+        root=ROOT, source=CsvSource(make_uptrend_frame(130), tmp_path / "bars.csv"),
+        persist=persist,
+    )
+    db = mc.PyDb.open_in_memory()
+    df = make_uptrend_frame(130)
+    db.insert_bars(
+        symbol="600519", name="贵州茅台", market="cn", asset_type="stock", frequency="daily",
+        dates=[str(d) for d in df["date"]],
+        opens=df["open"].tolist(), highs=df["high"].tolist(), lows=df["low"].tolist(),
+        closes=df["close"].tolist(), volumes=df["volume"].tolist(),
+        amounts=df["amount"].tolist(),
+    )
+    pipeline._db = db
+    return pipeline
+
+
+def test_regime_detected_on_uptrend(tmp_path):
+    """强上涨合成序列 → Bull + 置信度 + 判定依据（阈值来自 config/regime.yaml）。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert result.regime == "Bull"
+    assert result.regime_confidence > 0.6
+    assert result.regime_basis, "判定依据应非空"
+    assert result.regime_detector == "trend_vol_v1"
+
+
+def test_regime_history_recorded_when_persist(tmp_path):
+    """persist=True 时 regime 快照 append-only 落库，可读回且与结果一致。"""
+    pipeline = _pipeline_with_regime(tmp_path, persist=True)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    row = pipeline.db().latest_regime_history("cn", "600519")
+    assert row is not None
+    assert row["regime"] == result.regime == "Bull"
+    assert row["confidence"] == result.regime_confidence
+    assert row["basis"] == result.regime_basis
+    assert row["detector"] == "trend_vol_v1"
+    assert pipeline.db().latest_regime_history("hk", "600519") is None  # 市场隔离
+
+
+def test_report_shows_regime_with_basis(tmp_path):
+    """报告 meta 显示 regime 中文名 + 置信度，依据以引用行呈现。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    report = result.to_markdown()
+    assert "市场状态（regime）：上行" in report
+    assert "置信度" in report
+    assert "状态判定依据（trend_vol_v1）" in report
+    assert any(line in report for line in result.regime_basis)  # 依据原文可见
+
+
+def test_regime_config_missing_file_falls_back(tmp_path):
+    """config/regime.yaml 缺失 → 全默认（增强配置不挡管线）。"""
+    from meridian.config import RegimeConfig
+
+    cfg = RegimeConfig.load(tmp_path)
+    assert cfg == RegimeConfig()
+    assert cfg.trend_ma_slow == 60 and cfg.crisis_drawdown == 0.10
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

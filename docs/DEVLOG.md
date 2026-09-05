@@ -7,10 +7,10 @@
 ## 状态快照（每次提交后更新）
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
-- **最新提交**：`bb47ed5` DEVLOG 重构（内含并行会话 ledger 功能一并入库，见日记 09-04）（2026-09-04）
-- **测试基线**：Rust 81（core 27 + indicators 21 + quant_engine 21 + storage 12）+ Python 74，全绿
-- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0 / 601318 / 300059（日K到 2026-09-03）
-- **当前阶段**：Phase 0 完成，报告可读性改造三项全部完成，决策台账 CLI 可用；下一步 Phase 1（regime 检测真实逻辑）
+- **最新提交**：见 `git log`；本节随每次提交更新
+- **测试基线**：Rust 88（core 27 + indicators 21 + quant_engine 27 + storage 13）+ Python 78，全绿
+- **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0 / 601318 / 300059（日K到 2026-09-04）
+- **当前阶段**：Phase 1 进行中——RegimeDetector 真实逻辑（trend_vol_v1）✅ 落地；下一步 regime 权重档配置扩展 / 回测引擎
 - **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
 
 ## 当前阶段任务
@@ -27,6 +27,7 @@
   - [x] C：K线 + MA20/MA60 + BOLL + 成交量配图嵌入报告
 
 - [x] **决策台账 Python 层**（`bb47ed5`，并行会话完成）——`LedgerBook` 门面 + CLI 台账命令 + `LEDGER.md` 使用文档；与 DEVLOG 重构同提交入库（见日记 09-04「bb47ed5 提交说明」），Rust 81 + Python 74 全绿
+- [x] **Phase 1·市场状态检测 trend_vol_v1**（09-05）——RegimeState 加 basis、TrendVolDetector 规则检测、`config/regime.yaml` 阈值、`regime_history` 表落库、报告"市场状态"区（中文+置信度+判定依据）；002475 实测 Bear 95%（详见日记 09-05）
 
 ### 🔨 进行中（并行会话）
 
@@ -34,12 +35,24 @@
 
 ### 📋 待办（按 PLAN.md 路线）
 
-- [ ] **Phase 1：市场状态检测**——RegimeDetector 真实逻辑（替换 NullDetector 恒 unknown）、regime_history 落库
+- [ ] **Phase 1 剩余**：指数渠道接入（检测输入从标的自身K线切到沪深300/标普500/VIX）、regime 权重档扩展（by_regime 目前只有 Bear 档）、scheduler 定时任务
 - [ ] **Phase 2：回测 + AI 摘要**——回测引擎激活（backtest crate 占位中）、LLM Summary Agent（把规则报告转译成人话，不产分数不碰 action）
 - [ ] **Phase 3+**：组合管理、基本面数据、AI 预测模型（只进 Opportunity/Risk 通道）、Research Agents、FastAPI Web + Tauri
 - [ ] （低优先）Mimosa 完整安全审计补跑（钩子一直提示"扫描未完整"）
 
 ## 开发日记
+
+### 2026-09-05
+
+- **Phase 1·市场状态检测落地**（trend_vol_v1，全链路一次打通）：
+  - **Rust**：`RegimeState` 加 `basis: Vec<String>`（人话判定依据，去 Copy 改 Clone + `normalized()`）；`market_regime.rs` 实现 `TrendVolDetector`——趋势（MA20/60 快慢线+偏离带）× 波动（ATR14 占比）× 急跌（20 日窗内回撤），判定优先级 **Crisis（急跌+高波动同时成立）> Bear/Bull（趋势成立）> HighVol > Sideways**，窗口不足恒 Unknown（同指标红线"宁缺毋滥"）。6 个单测（强涨→Bull/缓跌→Bear/崩跌+高波动→Crisis/横盘→Sideways/短窗→Unknown/阈值覆盖改变判定）。
+  - **pybind**：`PyRegimeDetector`（8 个阈值参数全默认可覆盖 + 非法值校验）；`PyDb.insert_regime_history` / `latest_regime_history`。
+  - **storage**：`regime_history` 表（append-only：ts/symbol/regime/confidence/basis_json/detector）+ roundtrip 测试。
+  - **config**：`config/regime.yaml`（阈值全量可配，红线 4）+ `RegimeConfig.load`（缺失文件容忍回落默认——增强配置不挡管线）。
+  - **pipeline 接线**：analyze 前检测 → regime 传入 evaluate（by_regime 权重档生效）→ result 带置信度/依据/检测器名 → persist 时写 regime_history（失败告警不阻断）。报告 meta 显示中文状态+置信度，依据以引用行展示。
+  - **一期代理输入说明**：检测输入暂用标的自身K线（数据层尚无指数渠道）；PLAN 的指数版（沪深300/标普500/VIX）后续只换输入不换代码（trait 接口不变）。
+  - **实测**：002475 立讯精密 → **Bear 95%**，依据"MA20/60 = 56.05/60.50 偏离 -10.2%；20日回撤 -7.7%；ATR14/收盘 5.0%"，regime_history 落库可读回。
+  - **过程教训**：①duckdb-rs 的 `rows.next()` 返回 `Result<Option<&Row>>`（rusqlite 是 Option），match 分支要 Ok(None)/Ok(Some)/Err；②pyclass 方法调 trait 方法必须 import trait 本身；③测试预灌内存库必须无条件做（persist=False 也会经 `_read_cache` 触碰真实 data/ 库文件，撞文件锁）。
 
 ### 2026-09-04
 

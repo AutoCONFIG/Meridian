@@ -9,7 +9,7 @@ Phase 0 数据流（PLAN.md 第 5/9 节）：
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, TYPE_CHECKING
@@ -23,6 +23,7 @@ from meridian.config import (
     DataSourceConfig,
     MarketEntry,
     MarketsConfig,
+    RegimeConfig,
     SymbolEntry,
 )
 from meridian.data.base import BAR_COLUMNS, DataError, DataSource, FetchRequest
@@ -54,6 +55,16 @@ _MODEL_LABEL = {
 }
 _DIR_TEXT = {"up": "向上", "down": "向下", "neutral": "中性"}
 
+# Regime 代码 → 报告展示文案
+_REGIME_LABEL = {
+    "Bull": "上行",
+    "Bear": "下行",
+    "Sideways": "震荡",
+    "HighVol": "高波动",
+    "Crisis": "危机",
+    "Unknown": "未知",
+}
+
 
 @dataclass
 class AnalysisResult:
@@ -72,6 +83,9 @@ class AnalysisResult:
     data_source: str = "live"  # live=数据源拉取 / cache=本地缓存回退
     fallback_reason: str | None = None  # 回退原因（数据源失败详情 / 离线模式）
     df: pd.DataFrame | None = None  # 原始K线（画图用；展示层非评分链路）
+    regime_confidence: float = 0.0  # regime 置信度（Unknown 时为 0）
+    regime_basis: list[str] = field(default_factory=list)  # 判定依据（人话，报告展示）
+    regime_detector: str = ""  # 检测器名（可追溯）
 
     # ---- 视图便捷属性 ----
     @property
@@ -90,6 +104,12 @@ class AnalysisResult:
     def to_markdown(self, generated_at: datetime | None = None, chart_image: str | None = None) -> str:
         ts = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         action = self.score["action"]
+        regime_label = _REGIME_LABEL.get(self.regime, self.regime)
+        regime_note = (
+            f"{regime_label}（置信度 {self.regime_confidence:.0%}）"
+            if self.regime != "Unknown"
+            else regime_label
+        )
         lines = [
             f"# Meridian 分析报告 — {self.name} ({self.symbol})",
             "",
@@ -98,9 +118,11 @@ class AnalysisResult:
             f"- 数据区间：{self.start} ~ {self.end}（{self.bar_count} 根日K）",
             f"- 数据来源：{DATA_SOURCE_LABEL.get(self.data_source, self.data_source)}"
             + (f"；{self.fallback_reason}" if self.fallback_reason else ""),
-            f"- 市场状态（regime）：{self.regime}",
+            f"- 市场状态（regime）：{regime_note}",
             "",
         ]
+        if self.regime_basis:
+            lines += [f"> 状态判定依据（{self.regime_detector}）：{'；'.join(self.regime_basis)}", ""]
         if chart_image:
             lines += [f"![{self.name} ({self.symbol}) K线图]({chart_image})", ""]
         lines += self._summary_lines()
@@ -213,6 +235,7 @@ class AnalysisPipeline:
         self._ledger: "LedgerBook | None" = None
         self._engines: dict[str, mc.PyEngine] = {}  # asset_type → 引擎
         self._sources: dict[tuple[str, str], DataSource] = {}  # (market, asset_type) → 组合源
+        self._regime_detector: "mc.PyRegimeDetector | None" = None
 
     # ---- 初始化懒加载 ----
     @property
@@ -360,6 +383,10 @@ class AnalysisPipeline:
         if self.persist and data_source == "live":
             self._insert_bars(entry, sym, df)
 
+        # 市场状态检测（trend_vol_v1，标的自身K线作代理输入）——失败降级 Unknown
+        regime_info = self._detect_regime(df)
+        regime_str = regime_info["regime"] if regime_info else "Unknown"
+
         score = self.engine(entry.asset_type).evaluate(
             symbol=sym.symbol, name=sym.name, market=entry.market,
             asset_type=entry.asset_type, frequency=entry.frequency,
@@ -367,6 +394,7 @@ class AnalysisPipeline:
             opens=df["open"].tolist(), highs=df["high"].tolist(),
             lows=df["low"].tolist(), closes=df["close"].tolist(),
             volumes=df["volume"].tolist(), amounts=df["amount"].tolist(),
+            regime=regime_str,
         )
 
         result = AnalysisResult(
@@ -375,7 +403,7 @@ class AnalysisPipeline:
             market=entry.market,
             asset_type=entry.asset_type,
             frequency=entry.frequency,
-            regime="unknown",  # Phase 0：NullDetector 恒 Unknown
+            regime=regime_str,
             bar_count=len(df),
             start=str(df["date"].iloc[0]),
             end=str(df["date"].iloc[-1]),
@@ -383,11 +411,66 @@ class AnalysisPipeline:
             data_source=data_source,
             fallback_reason=fallback_reason,
             df=df,
+            regime_confidence=float(regime_info["confidence"]) if regime_info else 0.0,
+            regime_basis=list(regime_info["basis"]) if regime_info else [],
+            regime_detector=str(regime_info["detector"]) if regime_info else "",
         )
 
         if self.persist:
             self._record_ledger(result)
+            self._record_regime(result)
         return result
+
+    def _detect_regime(self, df: pd.DataFrame) -> dict | None:
+        """市场状态检测（trend_vol_v1；一期以标的自身K线作代理输入）。
+
+        阈值来自 config/regime.yaml；检测失败降级 None（报告显示未知），不挡分析。
+        """
+        if self._regime_detector is None:
+            from meridian import meridian_core as mc
+
+            cfg = RegimeConfig.load(self._root)
+            self._regime_detector = mc.PyRegimeDetector(
+                trend_ma_fast=cfg.trend_ma_fast,
+                trend_ma_slow=cfg.trend_ma_slow,
+                trend_band=cfg.trend_band,
+                drawdown_window=cfg.drawdown_window,
+                crisis_drawdown=cfg.crisis_drawdown,
+                atr_period=cfg.atr_period,
+                atr_pct_crisis=cfg.atr_pct_crisis,
+                atr_pct_high_vol=cfg.atr_pct_high_vol,
+            )
+        try:
+            return self._regime_detector.detect(
+                dates=[d.isoformat() if hasattr(d, "isoformat") else str(d) for d in df["date"]],
+                opens=[float(v) for v in df["open"]],
+                highs=[float(v) for v in df["high"]],
+                lows=[float(v) for v in df["low"]],
+                closes=[float(v) for v in df["close"]],
+                volumes=[float(v) for v in df["volume"]],
+                amounts=[float(v) for v in df["amount"]],
+            )
+        except Exception as exc:  # noqa: BLE001 —— regime 属增强信息，失败不阻断分析
+            warnings.warn(f"市场状态检测失败（降级为 Unknown）: {exc}")
+            return None
+
+    def _record_regime(self, result: AnalysisResult) -> None:
+        """regime_history 留痕（append-only）。写失败只告警不阻断（审计旁路，同台账语义）。"""
+        try:
+            self.db().insert_regime_history(
+                ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                symbol=result.symbol,
+                name=result.name,
+                market=result.market,
+                asset_type=result.asset_type,
+                frequency=result.frequency,
+                regime=result.regime,
+                confidence=result.regime_confidence,
+                basis=list(result.regime_basis),
+                detector=result.regime_detector,
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"regime_history 写入失败（本次检测未留痕）: {exc}")
 
     def _record_ledger(self, result: AnalysisResult) -> None:
         """决策台账留痕（做账）：每次成功分析 append-only 追加一条系统建议。

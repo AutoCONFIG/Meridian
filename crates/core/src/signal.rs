@@ -223,11 +223,14 @@ impl std::str::FromStr for Regime {
     }
 }
 
-/// 市场状态 + 置信度。Phase 0 恒为 Unknown（NullDetector 产出）。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// 市场状态 + 置信度 + 判定依据。
+/// basis 记录触发该状态的人话依据（如"收盘高于MA60"），落库 basis_json / 报告展示。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegimeState {
     pub regime: Regime,
     pub confidence: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub basis: Vec<String>,
 }
 
 impl RegimeState {
@@ -235,7 +238,19 @@ impl RegimeState {
         Self {
             regime: Regime::Unknown,
             confidence: 0.0,
+            basis: Vec::new(),
         }
+    }
+
+    /// confidence 收敛到 [0,1]，basis 去重去空。
+    pub fn normalized(mut self) -> Self {
+        if !self.confidence.is_finite() {
+            self.confidence = 0.0;
+        }
+        self.confidence = self.confidence.clamp(0.0, 1.0);
+        self.basis.retain(|s| !s.trim().is_empty());
+        self.basis.dedup();
+        self
     }
 }
 
