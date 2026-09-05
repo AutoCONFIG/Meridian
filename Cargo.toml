@@ -15,11 +15,13 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-# 内部 crate（依赖方向：core <- indicators <- quant_engine；core <- storage；pybind 依赖全部）
+# 内部 crate（依赖方向：core <- indicators <- quant_engine；core <- storage；
+# backtest 依赖 core/indicators；pybind 依赖全部）
 meridian-core = { path = "crates/core" }
 meridian-indicators = { path = "crates/indicators" }
 meridian-quant-engine = { path = "crates/quant_engine" }
 meridian-storage = { path = "crates/storage" }
+meridian-backtest = { path = "crates/backtest" }
 
 # 公共第三方依赖
 thiserror = "2.0"

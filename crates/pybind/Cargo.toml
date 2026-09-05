@@ -17,5 +17,6 @@ meridian-core = { workspace = true }
 meridian-indicators = { workspace = true }
 meridian-quant-engine = { workspace = true }
 meridian-storage = { workspace = true }
+meridian-backtest = { workspace = true }
 pyo3 = { workspace = true }
 chrono = { workspace = true }

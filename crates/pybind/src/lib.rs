@@ -9,12 +9,14 @@
 //! 实现时把引擎/存储门面独立为 py_engine.rs（执行适配记录见 docs/PLAN.md 第 13 节）。
 
 mod conversions;
+mod py_backtest;
 mod py_engine;
 mod py_model;
 mod py_regime;
 
 use pyo3::prelude::*;
 
+use py_backtest::PyBacktester;
 use py_engine::{PyDb, PyEngine};
 
 /// 扩展模块版本（与 workspace 版本对齐）。
@@ -28,6 +30,7 @@ fn meridian_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEngine>()?;
     m.add_class::<PyDb>()?;
     m.add_class::<py_regime::PyRegimeDetector>()?;
+    m.add_class::<PyBacktester>()?;
     m.add_function(wrap_pyfunction!(meridian_core_version, m)?)?;
     Ok(())
 }

@@ -8,3 +8,4 @@ description = "Meridian 回测层（Phase 2：事件驱动回测、Walk Forward�
 [dependencies]
 meridian-core = { workspace = true }
 meridian-indicators = { workspace = true }
+chrono = { workspace = true }

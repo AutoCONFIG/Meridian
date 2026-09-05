@@ -1,0 +1,14 @@
+# 回测配置（ScoreBased 策略 + 成本参数）。
+initial_cash: 1000000       # 初始资金（元）
+commission_rate: 0.0003     # 单边佣金率（按成交额）
+min_commission: 5.0         # 最低佣金（元/笔）
+slippage_rate: 0.001        # 单边滑点率
+trading_days_per_year: 252
+min_history_bars: 60        # 逐日评分起评前所需最少历史K线（覆盖最慢指标窗口）
+warmup_regime: true         # 逐日 regime 检测切权重档（trend_vol_v1，成本可忽略）
+action_weights:             # action → 目标仓位；null = 维持现状（Hold/Watch 语义）
+  Add: 1.0
+  Hold: null
+  Watch: null
+  Reduce: 0.5
+  Avoid: 0.0

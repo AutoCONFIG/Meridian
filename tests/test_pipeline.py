@@ -295,6 +295,69 @@ def test_render_summary_table(tmp_path):
     assert "- 00700 腾讯控股：无数据" in text
 
 
+# ---- 回测（Phase 2：ScoreBased 策略 + T+1 撮合）----
+
+
+def test_pybacktester_simulate_known_series():
+    """已知序列：满仓买入持有 → 绩效与手算一致（成本侵蚀后仍为正）。"""
+    from meridian import meridian_core as mc
+
+    n = 10
+    dates = [f"2026-01-{i + 1:02d}" for i in range(n)]
+    opens = [100.0 + i for i in range(n)]
+    closes = [101.0 + i for i in range(n)]
+    highs = [c + 1 for c in closes]
+    lows = [o - 1 for o in opens]
+    weights = [1.0] + [float("nan")] * (n - 1)  # 首日收盘满仓，其余维持
+
+    r = mc.PyBacktester().simulate(
+        dates, opens, highs, lows, closes,
+        [1e6] * n, [float("nan")] * n, weights,
+        initial_cash=1_000_000.0,
+    )
+    assert r["trade_count"] == 1
+    assert r["total_return"] > 0.0
+    assert r["trades"][0]["date_in"] == "2026-01-02", "T+1 开盘入场"
+    assert len(r["equity_curve"]) == n
+    assert r["profit_loss_ratio"] < 0, "无亏损交易 → Rust 侧用 -1 表示 ∞"
+
+
+def test_score_based_backtester_end_to_end(tmp_path):
+    """逐日评分回测集成：actions 序列完整、绩效字段齐全、净值闭环。"""
+    from meridian.backtest import ScoreBasedBacktester
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    bt = ScoreBasedBacktester(pipeline)
+    out = bt.run("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    n = len(out["dates"])
+    assert n == 130
+    assert len(out["actions"]) == n and len(out["target_weights"]) == n
+    assert all(a in {"Add", "Hold", "Reduce", "Watch", "Avoid", None} for a in out["actions"])
+    assert out["actions"][: bt.settings.min_history_bars] == [None] * bt.settings.min_history_bars, \
+        "指标窗口不足日无信号"
+    assert out["actions"][bt.settings.min_history_bars] is not None
+    for key in ("total_return", "annual_return", "max_drawdown", "sharpe",
+                "win_rate", "trade_count", "final_equity", "equity_curve", "trades"):
+        assert key in out, f"绩效字段 {key} 缺失"
+    assert out["equity_curve"][-1][1] > 0
+
+
+def test_render_backtest_report(tmp_path):
+    """回测报告渲染：绩效表 + 交易明细 + 净值图引用。"""
+    from meridian.backtest import ScoreBasedBacktester
+    from meridian.cli import render_backtest_report
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    out = ScoreBasedBacktester(pipeline).run(
+        "600519", start="2026-01-05", end="2026-12-31", offline=True
+    )
+
+    text = render_backtest_report(out)
+    assert "总收益率" in text and "最大回撤" in text and "夏普" in text
+    assert f"charts/backtest_600519_{out['dates'][-1]}.png" in text
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market
