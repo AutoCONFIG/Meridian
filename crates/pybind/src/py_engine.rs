@@ -499,6 +499,61 @@ impl PyDb {
             .map_err(|e| PyValueError::new_err(format!("{e}")))
     }
 
+    /// 写基本面估值快照（UPSERT）。字段可 None（该源无此值）。
+    #[pyo3(signature = (symbol, name, market, asset_type, frequency, date,
+                        pe_ttm, pb, ps_ttm, dv_ratio, total_mv, source))]
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    fn insert_fundamental(
+        &self,
+        symbol: &str,
+        name: &str,
+        market: &str,
+        asset_type: &str,
+        frequency: &str,
+        date: &str,
+        pe_ttm: Option<f64>,
+        pb: Option<f64>,
+        ps_ttm: Option<f64>,
+        dv_ratio: Option<f64>,
+        total_mv: Option<f64>,
+        source: &str,
+    ) -> PyResult<()> {
+        let asset = asset_from_parts(symbol, name, market, asset_type, frequency)?;
+        let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|e| PyValueError::new_err(format!("日期格式非法（YYYY-MM-DD）: {date}: {e}")))?;
+        self.db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .insert_fundamental(&asset, d, pe_ttm, pb, ps_ttm, dv_ratio, total_mv, source)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    }
+
+    /// 某标的最新基本面快照 → dict 或 None。
+    #[pyo3(signature = (market, symbol))]
+    fn latest_fundamental(&self, market: &str, symbol: &str) -> PyResult<Option<Py<PyAny>>> {
+        let row = self
+            .db
+            .lock()
+            .expect("PyDb 锁中毒")
+            .latest_fundamental(market, symbol)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        match row {
+            None => Ok(None),
+            Some((d, r)) => pyo3::Python::attach(|py| {
+                let d_out = pyo3::types::PyDict::new(py);
+                d_out.set_item("date", d.format("%Y-%m-%d").to_string())?;
+                d_out.set_item("pe_ttm", r.pe_ttm)?;
+                d_out.set_item("pb", r.pb)?;
+                d_out.set_item("ps_ttm", r.ps_ttm)?;
+                d_out.set_item("dv_ratio", r.dv_ratio)?;
+                d_out.set_item("total_mv", r.total_mv)?;
+                d_out.set_item("source", r.source)?;
+                Ok(Some(d_out.into_any().unbind()))
+            }),
+        }
+    }
+
     /// 某标的最新一条 regime 快照 → dict 或 None。
     #[pyo3(signature = (market, symbol))]
     fn latest_regime_history(

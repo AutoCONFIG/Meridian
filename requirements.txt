@@ -10,6 +10,12 @@ PyYAML>=6.0            # config/*.yaml 读取
 matplotlib>=3.8        # 报告K线配图（Agg 无头渲染）
 requests>=2.31         # HTTP 数据源（realtime/minute/tencent 直连）
 pytdx>=1.72            # 通达信协议（五档/分笔，tdx.py）
+numpy>=1.26            # 预测模型数值计算（forecast.py OLS）
+
+# ---- Web API（Phase 3）----
+fastapi>=0.115         # 只读服务层（webapp.py）
+uvicorn>=0.30          # ASGI 服务器
+httpx>=0.27            # TestClient 依赖（tests/test_webapp.py）
 
 # ---- 开发/构建 ----
 maturin>=1.7           # 构建 meridian_core

@@ -88,6 +88,11 @@ fn build_payload(ctx: &AnalysisContext) -> pyo3::PyResult<Py<PyAny>> {
         dict.set_item("bars_count", ctx.bars.len())?;
         dict.set_item("last_close", ctx.bars.last().map(|b| b.close))?;
         dict.set_item("indicators", snapshot_last_values(ctx.indicators)?)?;
+        // 收盘序列（时间序，供预测模型做回归/序列特征；与 indicators 末值快照互补）
+        dict.set_item(
+            "closes",
+            ctx.bars.iter().map(|b| b.close).collect::<Vec<f64>>(),
+        )?;
 
         Ok(dict.into_any().unbind())
     })

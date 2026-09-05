@@ -51,6 +51,17 @@ pub struct TradeRow {
     pub ledger_id: Option<i64>,
 }
 
+/// 基本面估值快照行（fundamentals）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FundamentalRow {
+    pub pe_ttm: Option<f64>,
+    pub pb: Option<f64>,
+    pub ps_ttm: Option<f64>,
+    pub dv_ratio: Option<f64>,
+    pub total_mv: Option<f64>,
+    pub source: String,
+}
+
 /// 市场状态快照行（regime_history）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegimeRow {
@@ -391,6 +402,83 @@ impl MeridianDb {
                 }))
             }
             Err(e) => Err(MeridianError::Storage(format!("读取 regime_history 失败: {e}"))),
+        }
+    }
+
+    /// 写基本面估值快照（UPSERT：同 market+symbol+date 覆盖）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_fundamental(
+        &self,
+        asset: &Asset,
+        date: NaiveDate,
+        pe_ttm: Option<f64>,
+        pb: Option<f64>,
+        ps_ttm: Option<f64>,
+        dv_ratio: Option<f64>,
+        total_mv: Option<f64>,
+        source: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO fundamentals
+                    (market, symbol, date, pe_ttm, pb, ps_ttm, dv_ratio, total_mv, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT (market, symbol, date) DO UPDATE SET
+                    pe_ttm = excluded.pe_ttm, pb = excluded.pb, ps_ttm = excluded.ps_ttm,
+                    dv_ratio = excluded.dv_ratio, total_mv = excluded.total_mv,
+                    source = excluded.source",
+                params![
+                    asset.market.as_str(),
+                    asset.symbol,
+                    date,
+                    pe_ttm,
+                    pb,
+                    ps_ttm,
+                    dv_ratio,
+                    total_mv,
+                    source,
+                ],
+            )
+            .map_err(|e| MeridianError::Storage(format!("写入 fundamentals 失败: {e}")))?;
+        Ok(())
+    }
+
+    /// 某标的最新一条基本面快照 → (日期, 字段)（无则 None）。
+    pub fn latest_fundamental(
+        &self,
+        market: &str,
+        symbol: &str,
+    ) -> Result<Option<(NaiveDate, FundamentalRow)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT date, pe_ttm, pb, ps_ttm, dv_ratio, total_mv, source
+                 FROM fundamentals WHERE market = ?1 AND symbol = ?2
+                 ORDER BY date DESC LIMIT 1",
+            )
+            .map_err(|e| MeridianError::Storage(format!("准备 fundamentals 查询失败: {e}")))?;
+        let mut rows = stmt
+            .query(params![market, symbol])
+            .map_err(|e| MeridianError::Storage(format!("查询 fundamentals 失败: {e}")))?;
+        match rows.next() {
+            Ok(None) => Ok(None),
+            Ok(Some(row)) => {
+                let get = |i: usize| -> Result<Option<f64>> {
+                    row.get(i).map_err(|e| MeridianError::Storage(format!("{e}")))
+                };
+                Ok(Some((
+                    row.get(0).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    FundamentalRow {
+                        pe_ttm: get(1)?,
+                        pb: get(2)?,
+                        ps_ttm: get(3)?,
+                        dv_ratio: get(4)?,
+                        total_mv: get(5)?,
+                        source: row.get(6).map_err(|e| MeridianError::Storage(format!("{e}")))?,
+                    },
+                )))
+            }
+            Err(e) => Err(MeridianError::Storage(format!("读取 fundamentals 失败: {e}"))),
         }
     }
 
@@ -793,6 +881,28 @@ action_rules:
         // market/symbol 隔离
         assert!(db.latest_regime("hk", "600519").unwrap().is_none());
         assert!(db.latest_regime("cn", "300750").unwrap().is_none());
+    }
+
+    #[test]
+    fn fundamentals_upsert_and_latest() {
+        let db = MeridianDb::open_in_memory().unwrap();
+        let a = asset();
+        let d1 = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 9, 4).unwrap();
+
+        db.insert_fundamental(&a, d1, Some(25.5), Some(8.1), None, Some(1.2), Some(21000.0), "legu")
+            .unwrap();
+        // 同日覆盖（UPSERT）
+        db.insert_fundamental(&a, d1, Some(25.6), None, None, None, None, "legu").unwrap();
+        db.insert_fundamental(&a, d2, Some(25.8), Some(8.2), None, None, None, "legu").unwrap();
+
+        let (date, row) = db.latest_fundamental("cn", "600519").unwrap().unwrap();
+        assert_eq!(date, d2);
+        assert_eq!(row.pe_ttm, Some(25.8));
+        assert_eq!(row.pb, Some(8.2));
+        assert_eq!(row.source, "legu");
+
+        assert!(db.latest_fundamental("hk", "600519").unwrap().is_none());
     }
 
     fn score_scalars(score: &CompositeScore) -> (f64, f64, &str, Option<f64>, Vec<String>) {

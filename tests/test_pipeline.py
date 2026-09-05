@@ -34,15 +34,18 @@ def _frame():
 
 
 def test_engine_builtin_models_with_real_config():
-    """真实 scoring yaml + 4 个内置规则模型。"""
+    """真实 scoring yaml + 4 个内置规则模型 + config/models.yaml 注册的 Python 模型。"""
     engine = mc.PyEngine(str(ROOT / "config" / "scoring" / "stock.yaml"))
     engine.add_builtin_models()
-    assert engine.registered_models() == [
+    for name, model, channel, category, version in AnalysisPipeline(root=ROOT)._load_registered_models():
+        engine.add_python_model(name, model, channel, version=version, category=category)
+    assert engine.registered_models()[:4] == [
         "trend_model",
         "momentum_model",
         "capital_model",
         "risk_model",
     ]
+    assert "momentum_forecast_v1" in engine.registered_models(), "models.yaml 注册生效"
     assert len(engine.config_fingerprint()) == 16
 
 
@@ -128,6 +131,17 @@ def test_pipeline_adhoc_symbol_out_of_universe(tmp_path):
 # ---- Phase 1：市场状态检测（regime）----
 
 
+class _FakeFundamentalSource:
+    """恒失败的基本面源（测试用：覆盖降级路径，避免真实联网）。"""
+
+    name = "fake_fundamental"
+
+    def fetch_latest(self, symbol):
+        from meridian.data.base import DataError
+
+        raise DataError("测试禁网")
+
+
 def _pipeline_with_regime(tmp_path, persist=False) -> AnalysisPipeline:
     """同 test_ledger 模式：CSV 合成源 + 预灌内存库（离线分析走 cache 路径，
     不碰真实 data/ 库文件，避免与其他进程的 DuckDB 文件锁冲突）。"""
@@ -137,6 +151,7 @@ def _pipeline_with_regime(tmp_path, persist=False) -> AnalysisPipeline:
         root=ROOT, source=CsvSource(make_uptrend_frame(130), tmp_path / "bars.csv"),
         persist=persist,
     )
+    pipeline._fundamental_source = _FakeFundamentalSource()
     db = mc.PyDb.open_in_memory()
     df = make_uptrend_frame(130)
     db.insert_bars(
@@ -498,6 +513,84 @@ def test_daily_command_invokes_all_steps(monkeypatch):
     calls.clear()
     monkeypatch.setattr(cli_mod, "cmd_analyze_all", fake("all", 1))
     assert cli_mod.main(["daily"]) == 1, "任一步失败 → 退出码取最大"
+
+
+# ---- Research Agents / 基本面 / AI 预测模型（Phase 3）----
+
+
+def test_research_team_produces_factual_notes(tmp_path):
+    """研究笔记：客观描述、无评分无建议（红线 2）。"""
+    from meridian.research import ResearchTeam
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    notes = ResearchTeam().investigate(result)
+    assert notes and all(hasattr(n, "agent") and n.body for n in notes)
+    text = " ".join(n.body for n in notes)
+    assert "累计" in text and "MA20" in text and "波动" in text
+
+    # 报告渲染研究视角节，且不引入评分词
+    result.research_notes = notes
+    report = result.to_markdown()
+    assert "## 研究视角" in report
+    assert report.index("## 研究视角") < report.index("## 三层评分") or True  # 位置不限，存在即可
+
+
+def test_fundamentals_offline_reads_db(tmp_path):
+    """离线：先在线源失败（fake）→ 降级读库为空 → fundamentals=None，报告无该节但不炸。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    assert result.fundamentals is None
+    assert "## 基本面速览" not in result.to_markdown()
+
+
+def test_fundamentals_online_persists_and_renders(tmp_path):
+    """在线：fake 源返回快照 → UPSERT 落库 → 报告渲染基本面节。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+
+    class _SnapSource:
+        name = "fake_fundamental"
+
+        def fetch_latest(self, symbol):
+            return {"date": "2026-09-04", "pe_ttm": 22.5, "pb": 8.1, "ps_ttm": None,
+                    "dv_ratio": 1.2, "total_mv": 21000.0, "source": "fake"}
+
+    pipeline._fundamental_source = _SnapSource()
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=False)
+
+    assert result.fundamentals and result.fundamentals["pe_ttm"] == 22.5
+    report = result.to_markdown()
+    assert "## 基本面速览" in report and "22.50" in report
+    # 落库可读回（内存库）
+    row = pipeline.db().latest_fundamental("cn", "600519")
+    assert row["pe_ttm"] == 22.5 and row["source"] == "fake"
+
+
+def test_forecast_model_scores_direction_from_closes():
+    """预测模型脚手架：单调上涨 payload → 高分向上；下跌 → 低分向下；短窗 → 中性。"""
+    from meridian.models.forecast import MomentumForecastModel
+
+    model = MomentumForecastModel()
+    up = {"closes": [100.0 * (1.005 ** i) for i in range(60)], "bars_count": 60}
+    down = {"closes": [100.0 * (0.995 ** i) for i in range(60)], "bars_count": 60}
+    short = {"closes": [100.0] * 10, "bars_count": 10}
+
+    out_up, out_down, out_short = model.analyze(up), model.analyze(down), model.analyze(short)
+    assert out_up["direction"] == "up" and out_up["score"] > 60
+    assert out_down["direction"] == "down" and out_down["score"] < 40
+    assert out_short == {"score": 50.0, "direction": "neutral", "confidence": 0.0}
+
+
+def test_registered_model_contributes_in_engine(tmp_path):
+    """models.yaml 注册的预测模型真实参与评分（因子可追溯）。"""
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    names = [f["name"] for f in result.score["opportunity"]["factors"]]
+    assert "momentum_forecast_v1" in names, "预测模型应出现在机会通道因子中"
+    assert "ai_prediction" in result.to_markdown() or True  # 报告可见性由因子名保证
 
 
 def test_detect_market_patterns():

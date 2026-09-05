@@ -1,0 +1,11 @@
+# Python 模型注册表（Phase 3 脚手架）：经 pyo3 桥接注册进评分通道。
+# channel 只能是 opportunity / risk（红线 1，桥接层强制校验）；
+# category: rule = 规则模型 / ai_prediction = AI 预测（默认）。
+# 缺失本文件 → 不加载任何 Python 模型（内置 Rust 模型照常工作）。
+models:
+  - name: momentum_forecast_v1
+    module: meridian.models.forecast
+    class: MomentumForecastModel
+    channel: opportunity
+    category: ai_prediction
+    version: "0.1.0"

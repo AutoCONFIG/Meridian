@@ -94,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     from meridian.orchestrator.pipeline import AnalysisPipeline
+    from meridian.research import ResearchTeam
     from meridian.summary_agent import SummaryAgent
 
     pipeline = AnalysisPipeline(persist=not args.no_persist)
@@ -101,6 +102,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         args.symbol, start=args.start, end=args.end, offline=args.offline, name=args.name
     )
 
+    result.research_notes = ResearchTeam().investigate(result)
     agent = SummaryAgent.from_env()
     if agent.enabled:
         result.ai_summary = agent.summarize(result.to_markdown())

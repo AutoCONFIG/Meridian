@@ -96,4 +96,19 @@ CREATE TABLE IF NOT EXISTS regime_history (
     detector   VARCHAR NOT NULL,
     PRIMARY KEY (id)
 );
+
+-- 基本面速览（UPSERT：同 market+symbol+date 覆盖）。v1 为日频估值快照
+-- （PE-TTM/PB/股息率/总市值），PLAN 的报告期财务表（ROE/营收/利润）后续增量扩展。
+CREATE TABLE IF NOT EXISTS fundamentals (
+    market    VARCHAR NOT NULL,
+    symbol    VARCHAR NOT NULL,
+    date      DATE    NOT NULL,
+    pe_ttm    DOUBLE,
+    pb        DOUBLE,
+    ps_ttm    DOUBLE,
+    dv_ratio  DOUBLE,
+    total_mv  DOUBLE,
+    source    VARCHAR NOT NULL,
+    PRIMARY KEY (market, symbol, date)
+);
 "#;

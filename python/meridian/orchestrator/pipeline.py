@@ -87,6 +87,8 @@ class AnalysisResult:
     regime_basis: list[str] = field(default_factory=list)  # 判定依据（人话，报告展示）
     regime_detector: str = ""  # 检测器名（可追溯）
     ai_summary: str | None = None  # LLM 转译摘要（解释性文本；无评分无新建议——红线 1/2）
+    research_notes: list = field(default_factory=list)  # ResearchNote 列表（客观事实，无评分——红线 2）
+    fundamentals: dict | None = None  # 基本面速览（pe_ttm/pb 等；None=无数据）
 
     # ---- 视图便捷属性 ----
     @property
@@ -136,6 +138,18 @@ class AnalysisResult:
                 "> 本节由 LLM 转译规则报告，仅解释已有内容，不产生新的评分或建议。",
                 "",
             ]
+        if self.research_notes:
+            from meridian.research import render_notes
+
+            lines += render_notes(self.research_notes)
+        if self.fundamentals:
+            f = self.fundamentals
+            lines += ["## 基本面速览", "", f"- 数据日期：{f.get('date', '—')}（来源：{f.get('source', '—')}）"]
+            for label, key in (("PE-TTM", "pe_ttm"), ("PB", "pb"), ("股息率%", "dv_ratio"), ("总市值(亿)", "total_mv")):
+                v = f.get(key)
+                if v is not None and v == v:  # 非 NaN
+                    lines.append(f"- {label}：{float(v):.2f}" if "市值" not in label else f"- {label}：{float(v):.1f}")
+            lines.append("")
         lines += [
             "## 三层评分",
             "",
@@ -193,9 +207,12 @@ class AnalysisResult:
             f"风险端：{'；'.join(risk_parts)}。" if risk_parts else f"风险端：风险分 {self.risk:.0f}/100。"
         )
         triggers = "；".join(action.get("rule_triggers", []))
+        hint = action.get("position_hint")
+        hint_text = f"，规则仓位参考 {hint:.0%}" if hint is not None else ""
         lines.append(
             f"综合：机会 {self.opportunity:.1f}/100、风险 {self.risk:.1f}/100 → **{action['action']}**"
             + (f"（规则：{triggers}）" if triggers else "")
+            + hint_text
             + "。"
         )
         lines.append("")
@@ -247,6 +264,7 @@ class AnalysisPipeline:
         self._sources: dict[tuple[str, str], DataSource] = {}  # (market, asset_type) → 组合源
         self._regime_detector: "mc.PyRegimeDetector | None" = None
         self._index_sources: dict[str, "DataSource | None"] = {}  # market → 指数源（None=该市场无指数配置）
+        self._fundamental_source: object | None = None  # 基本面源（懒构造；测试可注入 fake）
 
     # ---- 初始化懒加载 ----
     @property
@@ -299,8 +317,36 @@ class AnalysisPipeline:
             engine.add_builtin_models()
             for name, model, channel in self._extra_models:
                 engine.add_python_model(name, model, channel)
+            for name, model, channel, category, version in self._load_registered_models():
+                engine.add_python_model(name, model, channel, version=version, category=category)
             self._engines[key] = engine
         return self._engines[key]
+
+    def _load_registered_models(self) -> list[tuple[str, object, str, str, str]]:
+        """config/models.yaml → (name, 实例, channel, category, version)；缺失/单项失败跳过并告警。"""
+        import importlib
+
+        import yaml
+
+        path = self._root / "config" / "models.yaml"
+        if not path.exists():
+            return []
+        out: list[tuple[str, object, str, str, str]] = []
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"models.yaml 解析失败（忽略 Python 模型注册）: {exc}")
+            return []
+        for i, m in enumerate(raw.get("models") or []):
+            try:
+                cls = getattr(importlib.import_module(m["module"]), m["class"])
+                out.append((
+                    str(m["name"]), cls(), str(m["channel"]),
+                    str(m.get("category", "ai_prediction")), str(m.get("version", "0.1.0")),
+                ))
+            except Exception as exc:  # noqa: BLE001
+                warnings.warn(f"models.yaml 第 {i} 项加载失败（跳过）: {exc}")
+        return out
 
     def db(self) -> mc.PyDb:
         if self._db is None:
@@ -425,6 +471,7 @@ class AnalysisPipeline:
             regime_confidence=float(regime_info["confidence"]) if regime_info else 0.0,
             regime_basis=list(regime_info["basis"]) if regime_info else [],
             regime_detector=str(regime_info["detector"]) if regime_info else "",
+            fundamentals=self._load_fundamentals(entry, sym, offline),
         )
 
         if self.persist:
@@ -540,6 +587,37 @@ class AnalysisPipeline:
                 except Exception as exc:  # noqa: BLE001 —— 批量场景单标的失败不挡其余
                     failures.append((sym.symbol, sym.name, str(exc)))
         return results, failures
+
+    def _load_fundamentals(self, entry: MarketEntry, sym: SymbolEntry, offline: bool) -> dict | None:
+        """基本面估值速览（v1 仅 cn 股）：在线拉最新 → UPSERT 落库；离线/失败读库。
+
+        基本面属增强信息：拉取失败告警降级，不阻断分析。
+        测试可替换 self._fundamental_source 避免网络。
+        """
+        if entry.asset_type != "stock" or entry.market != "cn":
+            return None
+        try:
+            if not offline:
+                if self._fundamental_source is None:
+                    from meridian.data.fundamentals import FundamentalSource
+
+                    self._fundamental_source = FundamentalSource(DataSourceConfig.load(self._root))
+                snap = self._fundamental_source.fetch_latest(sym.symbol)
+                self.db().insert_fundamental(
+                    symbol=sym.symbol, name=sym.name, market=entry.market,
+                    asset_type=entry.asset_type, frequency=entry.frequency,
+                    date=snap["date"], pe_ttm=snap.get("pe_ttm"), pb=snap.get("pb"),
+                    ps_ttm=snap.get("ps_ttm"), dv_ratio=snap.get("dv_ratio"),
+                    total_mv=snap.get("total_mv"), source=snap.get("source", ""),
+                )
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"基本面拉取失败（降级读本地库）: {exc}")
+        try:
+            row = self.db().latest_fundamental(entry.market, sym.symbol)
+            return dict(row) if row else None
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"基本面读取失败（报告无基本面节）: {exc}")
+            return None
 
     def _record_ledger(self, result: AnalysisResult) -> None:
         """决策台账留痕（做账）：每次成功分析 append-only 追加一条系统建议。

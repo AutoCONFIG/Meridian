@@ -8,9 +8,9 @@
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
 - **最新提交**：见 `git log`；本节随每次提交更新
-- **测试基线**：Rust 95（core 27 + indicators 21 + quant_engine 28 + storage 13 + backtest 6）+ Python 94，全绿
+- **测试基线**：Rust 95（core 27 + indicators 21 + quant_engine 28 + storage 14 + backtest 6）+ Python 104，全绿
 - **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）
-- **当前阶段**：Phase 1/2 全部完成；Phase 3 核心（规则仓位 + 组合分析 + daily 调度入口）完成；剩 Phase 3 远期（基本面/AI 预测模型/Research Agents/FastAPI Web + Tauri）
+- **当前阶段**：Phase 0/1/2 + Phase 3 主体全部完成（研究 Agent/基本面/AI 预测脚手架/Web API）；剩 Tauri 桌面壳、基本面评分模型（fundamental_model 进 Risk 通道）等
 - **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
 
 ## 当前阶段任务
@@ -40,6 +40,12 @@
   - **指数输入扩展**：hk 加恒生指数 hkHSI（实测 ifzq 有日K）；**us 不配**——ifzq 美股指数量K仅实时快照（day 为空，2026-09-05 实测），维持标的自身K线代理
   - **组合分析**（`portfolio.py` + CLI `portfolio`）：集中度 HHI（有效持仓数）、日收益率 Pearson 相关矩阵（近 120 日）+ 高相关对(>0.7)提示、加权风险暴露（>65 提示降仓）、组合规则仓位 Σ(w×hint)；权重来自 `config/portfolio.yaml` holdings（缺省等权）；实跑 7 标的：HHI 0.143 / 暴露 62.1 / 组合仓位 50%
   - **`daily` 一条龙**：analyze-all → portfolio → 台账导出，作为定时任务入口（调度用系统任务计划程序/cron 触发 CLI）
+- [x] **Phase 3·研究 Agent + 基本面 + AI 预测脚手架 + Web API**（09-05）
+  - **Research Agents**（`research.py`，红线 2）：TechnicalPostureAgent（区间涨跌/回撤/均线位置）+ VolatilityLiquidityAgent（已实现波动/量能对比）→ 报告"研究视角"节；只描述客观事实，无评分无建议；CLI analyze 自动填充
+  - **基本面**（红线 4/5 不碰，纯信息层）：`data/fundamentals.py` 百度渠道（实测 PE-TTM/PB/总市值/市现率可用；市销率/股息率 akshare 解析损坏留 None）；storage 新增 `fundamentals` 表（UPSERT）；管线在线拉取落库、离线/失败读库降级；报告"基本面速览"节。茅台实测 PE 20.42/PB 6.62/市值 1.66 万亿
+  - **AI 预测模型脚手架**（红线 1 合规示范）：payload 增加 `closes` 序列（py_model.rs）；`models/forecast.py` MomentumForecastModel（log 收益 OLS 斜率外推 20 日 → 0-100 分）+ `config/models.yaml` 注册表（channel/category 可配，管线加载，加载失败单项跳过）；实测uptrend 序列 → up 方向高分，且因子名出现在机会通道（可追溯）
+  - **Web API**（`webapp.py`，FastAPI 只读服务层）：POST /api/analyze（分析+研究笔记+markdown）、GET /api/portfolio、/api/ledger、/api/symbols、/api/reports（含防路径穿越）；uvicorn 起服实测全端点通；uv run 加 fastapi/uvicorn/httpx
+  - 过程教训：①`create_app(app)` 把 FastAPI 实例自己传成 pipeline 参数（state.pipeline 变 FastAPI）——工厂无参调用；②Rust 里 `///` doc 行后面直接跟代码会把签名注释掉（此前 latest_regime 签名被吞，编译错误绕了一圈）——doc 与 fn 必须分两行
 
 ### 🔨 进行中（并行会话）
 
@@ -47,7 +53,7 @@
 
 ### 📋 待办（按 PLAN.md 路线）
 
-- [ ] **Phase 3 远期**：基本面数据 + fundamental_model、AI 预测模型（只进 Opportunity/Risk 通道）、Research Agents（信息报告无评分）、FastAPI Web + Tauri 桌面端
+- [ ] **Phase 3 剩余**：Tauri 桌面壳（套 Web API）、fundamental_model 评分模型（需 AnalysisContext 扩展 fundamentals，走 Risk 通道）、Research Agent 扩展（行业/消息面需新数据源）
 - [ ] （低优先）Mimosa 完整安全审计补跑（钩子一直提示"扫描未完整"）
 - [ ] （低优先）us 指数输入（需另找美股指数历史K渠道，ifzq 只有快照）；Walk Forward 回测（规则策略下价值有限，先缓）
 
