@@ -8,6 +8,7 @@ members = [
     "crates/backtest",
     "crates/pybind",
 ]
+exclude = ["desktop/src-tauri"]  # 桌面壳独立工具链，不混入主 workspace
 
 [workspace.package]
 version = "0.1.0"

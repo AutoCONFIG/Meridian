@@ -8,7 +8,7 @@
 
 - **分支**：`main`（远程 `origin` = github.com:AutoCONFIG/Meridian.git）
 - **最新提交**：见 `git log`；本节随每次提交更新
-- **测试基线**：Rust 95（core 27 + indicators 21 + quant_engine 28 + storage 14 + backtest 6）+ Python 104，全绿
+- **测试基线**：Rust 96（core 27 + indicators 21 + quant_engine 28 + storage 14 + backtest 6）+ Python 107，全绿
 - **数据状态**：DuckDB（`data/meridian.duckdb`）已入库标的：600519 / 300750 / 600547 / 002475 / 00700 / AAPL / RB0（日K到 2026-09-04）
 - **当前阶段**：Phase 0/1/2 + Phase 3 主体全部完成（研究 Agent/基本面/AI 预测脚手架/Web API）；剩 Tauri 桌面壳、基本面评分模型（fundamental_model 进 Risk 通道）等
 - **并行会话**：另一会话在做 Python 层 LedgerBook 门面 + CLI 台账命令（已随 `bb47ed5` 入库并全绿）；各自提交时严格只含自己的文件
@@ -40,12 +40,19 @@
   - **指数输入扩展**：hk 加恒生指数 hkHSI（实测 ifzq 有日K）；**us 不配**——ifzq 美股指数量K仅实时快照（day 为空，2026-09-05 实测），维持标的自身K线代理
   - **组合分析**（`portfolio.py` + CLI `portfolio`）：集中度 HHI（有效持仓数）、日收益率 Pearson 相关矩阵（近 120 日）+ 高相关对(>0.7)提示、加权风险暴露（>65 提示降仓）、组合规则仓位 Σ(w×hint)；权重来自 `config/portfolio.yaml` holdings（缺省等权）；实跑 7 标的：HHI 0.143 / 暴露 62.1 / 组合仓位 50%
   - **`daily` 一条龙**：analyze-all → portfolio → 台账导出，作为定时任务入口（调度用系统任务计划程序/cron 触发 CLI）
-- [x] **Phase 3·研究 Agent + 基本面 + AI 预测脚手架 + Web API**（09-05）
-  - **Research Agents**（`research.py`，红线 2）：TechnicalPostureAgent（区间涨跌/回撤/均线位置）+ VolatilityLiquidityAgent（已实现波动/量能对比）→ 报告"研究视角"节；只描述客观事实，无评分无建议；CLI analyze 自动填充
+- [x] **Phase 3·研究 Agent + 基本面 + AI 预测脚手架 + Web API**（09-05）  - **Research Agents**（`research.py`，红线 2）：TechnicalPostureAgent（区间涨跌/回撤/均线位置）+ VolatilityLiquidityAgent（已实现波动/量能对比）→ 报告"研究视角"节；只描述客观事实，无评分无建议；CLI analyze 自动填充
   - **基本面**（红线 4/5 不碰，纯信息层）：`data/fundamentals.py` 百度渠道（实测 PE-TTM/PB/总市值/市现率可用；市销率/股息率 akshare 解析损坏留 None）；storage 新增 `fundamentals` 表（UPSERT）；管线在线拉取落库、离线/失败读库降级；报告"基本面速览"节。茅台实测 PE 20.42/PB 6.62/市值 1.66 万亿
   - **AI 预测模型脚手架**（红线 1 合规示范）：payload 增加 `closes` 序列（py_model.rs）；`models/forecast.py` MomentumForecastModel（log 收益 OLS 斜率外推 20 日 → 0-100 分）+ `config/models.yaml` 注册表（channel/category 可配，管线加载，加载失败单项跳过）；实测uptrend 序列 → up 方向高分，且因子名出现在机会通道（可追溯）
   - **Web API**（`webapp.py`，FastAPI 只读服务层）：POST /api/analyze（分析+研究笔记+markdown）、GET /api/portfolio、/api/ledger、/api/symbols、/api/reports（含防路径穿越）；uvicorn 起服实测全端点通；uv run 加 fastapi/uvicorn/httpx
+  - **消息面 NewsAgent**（research.py，仅 cn 股）：东财个股新闻前 5 条标题转述（时间+来源+标题原文，不解读不判断）；渠道失败静默缺席；报告"研究视角"与 Web 看板同步展示
+- [x] **K线主画面看板 + Tauri 桌面壳**（09-05，响应"主画面是K线、指标都画在K线上"的诉求）
   - 过程教训：①`create_app(app)` 把 FastAPI 实例自己传成 pipeline 参数（state.pipeline 变 FastAPI）——工厂无参调用；②Rust 里 `///` doc 行后面直接跟代码会把签名注释掉（此前 latest_regime 签名被吞，编译错误绕了一圈）——doc 与 fn 必须分两行
+- [x] **K线主画面看板 + Tauri 桌面壳**（09-05，响应"主画面是K线、指标都画在K线上"的诉求）
+  - **Web 看板重构**（`webapp_static/index.html`，echarts 5.5 本地化 vendor）：主画面交互式K线（可缩放/十字线）——蜡烛（红涨绿跌）+ MA20/MA60 + BOLL(20,2) 三轨 + 成交量副图 + **回测信号色带**（底部窄条：绿=Add/蓝=Hold/黄=Reduce/红=Avoid/灰=Watch，与K线联动缩放）+ **交易标记**（▲买入 ▼卖出，T+1 开盘价定位）+ **最新建议 pin 标记**（最后一根K线上，含仓位%）；「叠加回测信号」按钮一键把逐日建议铺上K线——"什么时候会加仓/回避"直接可见
+  - **API 配套**：`/api/analyze` 增加 `bars`（OHLCV 序列）与 `factors`（因子+触发明细，供图旁对照表）；新增 `POST /api/backtest`（逐日 action 序列+交易点+绩效，NaN→None 合规 JSON）；`/static` 挂载 vendor
+  - **Tauri 2 桌面壳**（`desktop/`）：窗口加载 http://127.0.0.1:8300，启动时服务未监听则自动拉起 venv 的 uvicorn（exe 相对路径定位项目根），退出回收后端进程；Windows-only API 用 cfg(windows) 隔离；`npx tauri build --debug` 产出 meridian-desktop.exe（12MB）+ NSIS 安装包。Tauri 工程必须从主 workspace exclude（Cargo workspace 成员冲突）
+  - 三平台说明：Tauri 2 天然支持 Windows/macOS/Linux（系统 WebView），本次验证 Windows；macOS/Linux 打包待对应机器
+  - 过程教训：①测试 webapp 管线必须预灌内存库（同 test_pipeline 教训③，否则 offline 读真实库）；②回测响应的 NaN 权重要转 None（JSON 禁 NaN）；③Tauri workspace 冲突报错信息直接给了两种修法，exclude 是正解（桌面壳独立工具链）
 
 ### 🔨 进行中（并行会话）
 

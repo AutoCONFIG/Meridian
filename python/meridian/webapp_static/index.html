@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian — 量化研究决策辅助</title>
+<script src="/static/vendor/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --border: #26304a; --text: #dce3f2;
+    --muted: #8b96ad; --accent: #4f8cff; --up: #e05252; --down: #3fa66c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  header { padding: 10px 20px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header input[type=text] { background: #101625; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 190px; }
+  header button { background: var(--accent); border: none; border-radius: 8px;
+    padding: 7px 16px; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
+  header button.ghost { background: #24304d; }
+  header button:disabled { opacity: .5; cursor: wait; }
+  header label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  #health { margin-left: auto; font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr 360px; gap: 12px; padding: 12px 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .panel h2 { font-size: 12px; color: var(--muted); margin: 0 0 8px; letter-spacing: 1px; }
+  #chart { width: 100%; height: 620px; }
+  #err { color: var(--up); font-size: 12px; min-height: 16px; }
+  .kpis { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+  .kpi { min-width: 96px; }
+  .kpi .label { color: var(--muted); font-size: 11px; }
+  .kpi .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 20px; font-size: 14px; font-weight: 700; }
+  .badge.Add { background: #3d2426; color: var(--up); }
+  .badge.Avoid, .badge.Reduce { background: #1d3328; color: var(--down); }
+  .badge.Hold, .badge.Watch { background: #24304d; color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .notes li { margin-bottom: 5px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  pre.report { max-height: 300px; overflow: auto; font-size: 11.5px; line-height: 1.55;
+               white-space: pre-wrap; background: #101625; padding: 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Meridian</h1>
+  <span class="sub">量化负责可信 · AI 负责理解 · 人负责决策</span>
+  <input type="text" id="symbol" placeholder="代码：600519 / 002475 / 00700 / AAPL" value="600519">
+  <input type="text" id="name" placeholder="名称（可选）" style="width:120px">
+  <button id="go">分析</button>
+  <button id="bt" class="ghost">叠加回测信号</button>
+  <label><input type="checkbox" id="offline"> 离线</label>
+  <span id="health"></span>
+</header>
+<main>
+  <section>
+    <div class="panel" style="padding:6px">
+      <div id="err" style="padding:0 8px"></div>
+      <div id="chart"></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>触发明细（分数为什么）</h2>
+      <div id="factors"></div>
+    </div>
+  </section>
+  <section>
+    <div class="panel" style="margin-bottom:12px">
+      <h2>结论</h2>
+      <div id="kpi" class="kpis"></div>
+      <div id="funda" class="muted"></div>
+    </div>
+    <div class="panel" style="margin-bottom:12px">
+      <h2>研究视角（客观事实，无评分）</h2>
+      <ul id="notes" style="margin:0;padding-left:18px;font-size:12.5px"></ul>
+    </div>
+    <div class="panel">
+      <details>
+        <summary>完整报告（markdown）</summary>
+        <pre id="report" class="report" style="margin-top:8px">← 点「分析」</pre>
+      </details>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 1) => v == null ? "—" : Number(v).toFixed(d);
+let chart = null, lastBars = null, lastMeta = null;
+
+const ACTION_COLOR = { Add: "#3fa66c", Hold: "#4f8cff", Watch: "#5a647d", Reduce: "#d9a13b", Avoid: "#e05252" };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  return r.json();
+}
+
+/* ---- 指标计算（前端轻算，仅展示）---- */
+function sma(arr, n) {
+  const out = new Array(arr.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < arr.length; i++) {
+    sum += arr[i];
+    if (i >= n) sum -= arr[i - n];
+    if (i >= n - 1) out[i] = sum / n;
+  }
+  return out;
+}
+function boll(closes, n = 20, k = 2) {
+  const mid = sma(closes, n), up = [], lo = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < n - 1) { up.push(null); lo.push(null); continue; }
+    const seg = closes.slice(i - n + 1, i + 1);
+    const m = seg.reduce((a, b) => a + b) / n;
+    const sd = Math.sqrt(seg.reduce((a, b) => a + (b - m) ** 2, 0) / n);
+    up.push(m + k * sd); lo.push(m - k * sd);
+  }
+  return { mid, up, lo };
+}
+
+/* ---- K线主图 ---- */
+function drawChart(bars, meta, bt) {
+  const dates = bars.dates, closes = bars.close;
+  const ma20 = sma(closes, 20), ma60 = sma(closes, 60);
+  const b = boll(closes);
+
+  const series = [
+    { name: "K线", type: "candlestick", data: bars.open.map((o, i) => [o, bars.close[i], bars.low[i], bars.high[i]]),
+      itemStyle: { color: "#e05252", color0: "#3fa66b", borderColor: "#e05252", borderColor0: "#3fa66b" },
+      markPoint: markPoints(bt), markLine: latestSignalMark(meta), z: 4 },
+    { name: "MA20", type: "line", data: ma20, showSymbol: false, lineStyle: { width: 1, color: "#ff9f43" } },
+    { name: "MA60", type: "line", data: ma60, showSymbol: false, lineStyle: { width: 1, color: "#b47cff" } },
+    { name: "BOLL上", type: "line", data: b.up, showSymbol: false, lineStyle: { width: .8, color: "#4f8cff88", type: "dashed" } },
+    { name: "BOLL下", type: "line", data: b.lo, showSymbol: false, lineStyle: { width: .8, color: "#4f8cff88", type: "dashed" } },
+    { name: "BOLL中", type: "line", data: b.mid, showSymbol: false, lineStyle: { width: .8, color: "#4f8cff", type: "dotted" } },
+    { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
+      data: bars.volume.map((v, i) => ({ value: v, itemStyle: { color: closes[i] >= bars.open[i] ? "#e0525299" : "#3fa66b99" } })) },
+  ];
+  if (bt) series.push(signalSeries(bt, dates));
+
+  const option = {
+    animation: false, backgroundColor: "transparent",
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" }, backgroundColor: "#1b2337", borderColor: "#26304a",
+               textStyle: { color: "#dce3f2", fontSize: 12 } },
+    legend: { top: 2, textStyle: { color: "#8b96ad", fontSize: 11 },
+              data: ["K线", "MA20", "MA60", "BOLL中", ...(bt ? ["信号"] : [])] },
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    grid: [
+      { left: 62, right: 20, top: 28, height: "56%" },
+      { left: 62, right: 20, top: "70%", height: "14%" },
+      ...(bt ? [{ left: 62, right: 20, top: "88%", height: "6%" }] : []),
+    ],
+    xAxis: [
+      { type: "category", data: dates, gridIndex: 0, boundaryGap: true,
+        axisLine: { lineStyle: { color: "#26304a" } }, axisLabel: { show: false }, splitLine: { show: false } },
+      { type: "category", data: dates, gridIndex: 1, boundaryGap: true,
+        axisLine: { lineStyle: { color: "#26304a" } }, axisLabel: { show: false }, splitLine: { show: false } },
+      ...(bt ? [{ type: "category", data: dates, gridIndex: 2, boundaryGap: true,
+        axisLine: { lineStyle: { color: "#26304a" } },
+        axisLabel: { color: "#8b96ad", fontSize: 10 }, splitLine: { show: false } }] : []),
+    ],
+    yAxis: [
+      { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: "#1c2438" } },
+        axisLabel: { color: "#8b96ad", fontSize: 10 } },
+      { gridIndex: 1, splitNumber: 2, splitLine: { show: false }, axisLabel: { show: false } },
+      ...(bt ? [{ gridIndex: 2, min: 0, max: 1, show: false }] : []),
+    ],
+    dataZoom: [
+      { type: "inside", xAxisIndex: [...Array(series.some(s => s.name === "信号") ? 3 : 2).keys()] },
+      { type: "slider", xAxisIndex: [...Array(series.some(s => s.name === "信号") ? 3 : 2).keys()],
+        bottom: 2, height: 16, borderColor: "#26304a", textStyle: { color: "#8b96ad" } },
+    ],
+    series,
+  };
+  if (!chart) chart = echarts.init($("chart"));
+  chart.setOption(option, true);
+}
+
+function markPoints(bt) {
+  if (!bt) return undefined;
+  const pts = [];
+  for (const t of bt.trades) {
+    pts.push({ coord: [t.date_in, t.price_in], value: "买入",
+               symbol: "triangle", symbolSize: 13, symbolRotate: 0, symbolOffset: [0, "120%"],
+               itemStyle: { color: "#e05252" }, label: { show: false } });
+    pts.push({ coord: [t.date_out, t.price_out], value: "卖出",
+               symbol: "triangle", symbolSize: 13, symbolRotate: 180, symbolOffset: [0, "-120%"],
+               itemStyle: { color: "#3fa66b" }, label: { show: false } });
+  }
+  return pts;
+}
+
+function latestSignalMark(meta) {
+  if (!meta) return undefined;
+  const hint = meta.position_hint == null ? "" : ` ${Math.round(meta.position_hint * 100)}%`;
+  return {
+    symbol: "pin", symbolSize: 46, symbolOffset: [0, "-58%"],
+    data: [{ coord: [meta.last_date, meta.last_close], value: meta.action + hint }],
+    label: { show: true, formatter: meta.action + hint, color: "#fff", fontSize: 11, fontWeight: 700 },
+    itemStyle: { color: ACTION_COLOR[meta.action] || "#4f8cff" },
+  };
+}
+
+function signalSeries(bt, dates) {
+  const data = bt.actions.map(a => ({
+    value: a == null ? 0 : 1,
+    itemStyle: { color: a ? (ACTION_COLOR[a] || "#5a647d") : "transparent" },
+  }));
+  return {
+    name: "信号", type: "bar", xAxisIndex: 2, yAxisIndex: 2, barWidth: "100%", data,
+    tooltip: { formatter: p => {
+      const a = bt.actions[p.dataIndex];
+      return `${dates[p.dataIndex]}<br/>当日建议: ${a ?? "（无信号/窗口不足）"}`
+        + (bt.trades.some(t => t.date_in === dates[p.dataIndex]) ? "<br/>▲ T+1 开盘买入" : "")
+        + (bt.trades.some(t => t.date_out === dates[p.dataIndex]) ? "<br/>▼ T+1 开盘卖出" : "");
+    } },
+  };
+}
+
+/* ---- 面板渲染 ---- */
+function renderPanels(d) {
+  const hint = d.position_hint == null ? "—" : Math.round(d.position_hint * 100) + "%";
+  $("kpi").innerHTML = `
+    <div class="kpi"><div class="label">机会</div><div class="value">${fmt(d.opportunity)}</div></div>
+    <div class="kpi"><div class="label">风险</div><div class="value">${fmt(d.risk)}</div></div>
+    <div class="kpi"><div class="label">建议</div><div class="value"><span class="badge ${d.action}">${d.action}</span></div>
+      <div class="muted">规则仓位 ${hint}</div></div>
+    <div class="kpi"><div class="label">市场状态</div><div class="value" style="font-size:20px">${d.regime}</div></div>`;
+  $("funda").textContent = d.fundamentals
+    ? `基本面（${d.fundamentals.date}）：PE-TTM ${fmt(d.fundamentals.pe_ttm, 2)} / PB ${fmt(d.fundamentals.pb, 2)} / 总市值 ${fmt(d.fundamentals.total_mv, 0)} 亿（${d.fundamentals.source}）`
+    : "基本面：暂无数据";
+
+  const layerTable = (title, factors) => {
+    const rows = factors.map(f => {
+      const trig = (f.details || []).map(x =>
+        `<tr><td style="padding-left:20px;color:var(--muted)">↳ ${x.name}</td>
+         <td class="num">${fmt(x.value, 4).replace(/\.?0+$/, "")}</td>
+         <td class="num" style="color:${x.contribution > 0 ? "var(--up)" : "var(--down)"}">${x.contribution > 0 ? "+" : ""}${Math.round(x.contribution)}</td>
+         <td class="muted">${x.description}</td></tr>`).join("");
+      return `<tr><td><b>${f.name}</b></td><td class="num">${fmt(f.value, 2)}</td>
+              <td class="num">${f.contribution > 0 ? "+" : ""}${fmt(f.contribution, 2)}</td>
+              <td>${f.description}</td></tr>` + trig;
+    }).join("");
+    return `<table><thead><tr><th>${title}</th><th class="num">输出分</th><th class="num">加权贡献</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table>`;
+  };
+  $("factors").innerHTML = layerTable("机会因子", d.factors.opportunity) + layerTable("风险因子", d.factors.risk);
+
+  $("notes").innerHTML = (d.research_notes || [])
+    .map(n => `<li><b>${n.title}</b>（${n.agent}）：${n.body}</li>`).join("") || "<li>暂无</li>";
+  $("report").textContent = d.report;
+}
+
+async function doAnalyze() {
+  $("go").disabled = true; $("err").textContent = "";
+  try {
+    const d = await api("/api/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: $("symbol").value.trim(), name: $("name").value.trim() || null, offline: $("offline").checked }),
+    });
+    lastBars = d.bars;
+    lastMeta = { action: d.action, position_hint: d.position_hint,
+                 last_date: d.bars ? d.bars.dates[d.bars.dates.length - 1] : null,
+                 last_close: d.bars ? d.bars.close[d.bars.close.length - 1] : null };
+    drawChart(d.bars, lastMeta, null);
+    renderPanels(d);
+  } catch (e) { $("err").textContent = "分析失败: " + e.message; }
+  finally { $("go").disabled = false; }
+}
+
+async function doBacktest() {
+  $("bt").disabled = true; $("err").textContent = "";
+  try {
+    const bt = await api("/api/backtest", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: $("symbol").value.trim(), offline: $("offline").checked }),
+    });
+    drawChart(lastBars, lastMeta, bt);
+    $("err").style.color = "#3fa66c";
+    $("err").textContent = `回测叠加完成：收益 ${fmt(bt.total_return * 100, 1)}%，回撤 ${fmt(bt.max_drawdown * 100, 1)}%，夏普 ${fmt(bt.sharpe, 2)}，${bt.trade_count} 笔（底部色带=逐日建议，▲买入 ▼卖出）`;
+    $("err").style.color = "";
+  } catch (e) { $("err").textContent = "回测失败: " + e.message; }
+  finally { $("bt").disabled = false; }
+}
+
+$("go").onclick = doAnalyze;
+$("bt").onclick = doBacktest;
+$("symbol").addEventListener("keydown", e => { if (e.key === "Enter") doAnalyze(); });
+
+fetch("/api/health").then(() => $("health").textContent = "● 服务正常").catch(() => $("health").textContent = "● 服务异常");
+doAnalyze();
+</script>
+</body>
+</html>

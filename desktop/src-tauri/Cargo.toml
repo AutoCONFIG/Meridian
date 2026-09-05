@@ -1,0 +1,16 @@
+[package]
+name = "meridian-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Meridian 桌面壳（Tauri 2）：加载本地 Meridian 服务看板，自动拉起/回收后端"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 2

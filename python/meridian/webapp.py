@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from meridian.config import AppConfig, MarketsConfig
@@ -20,6 +23,15 @@ app = FastAPI(
     description="AI 增强型量化投资研究与决策辅助平台（量化负责可信，AI 负责理解，人负责决策）",
     version="0.1.0",
 )
+
+_STATIC_DIR = Path(__file__).resolve().parent / "webapp_static"
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index():
+    """看板页（纯静态单文件；Tauri 桌面壳复用同一页面）。"""
+    return resources.files("meridian").joinpath("webapp_static/index.html").read_text(encoding="utf-8")
 
 
 def create_app(pipeline: AnalysisPipeline | None = None) -> FastAPI:
@@ -77,6 +89,15 @@ def analyze(req: AnalyzeRequest):
 
     report_path = pipeline.write_report(result)
     action = result.score["action"]
+    df = result.df
+    bars = {
+        "dates": [str(d) for d in df["date"]],
+        "open": [float(v) for v in df["open"]],
+        "high": [float(v) for v in df["high"]],
+        "low": [float(v) for v in df["low"]],
+        "close": [float(v) for v in df["close"]],
+        "volume": [float(v) for v in df["volume"]],
+    } if df is not None and len(df) else None
     return {
         "symbol": result.symbol,
         "name": result.name,
@@ -92,8 +113,54 @@ def analyze(req: AnalyzeRequest):
         "research_notes": [
             {"agent": n.agent, "title": n.title, "body": n.body} for n in result.research_notes
         ],
+        "bars": bars,
+        "factors": {
+            layer: [
+                {
+                    "name": f["name"],
+                    "value": f["value"],
+                    "contribution": f["contribution"],
+                    "description": f["description"],
+                    "details": [
+                        {"name": d["name"], "value": d["value"],
+                         "contribution": d["contribution"], "description": d["description"]}
+                        for d in f.get("details", [])
+                    ],
+                }
+                for f in result.score[layer]["factors"]
+            ]
+            for layer in ("opportunity", "risk")
+        },
         "report": result.to_markdown(),
         "report_path": str(report_path),
+    }
+
+
+@app.post("/api/backtest")
+def backtest_endpoint(req: AnalyzeRequest):
+    """逐日评分回测：返回逐日 action 序列（画成K线信号色带）+ 交易点 + 绩效。"""
+    from meridian.backtest import ScoreBasedBacktester
+
+    pipeline: AnalysisPipeline = app.state.pipeline
+    try:
+        out = ScoreBasedBacktester(pipeline).run(
+            req.symbol, start=req.start, end=req.end, offline=req.offline, name=req.name
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "symbol": out["symbol"],
+        "name": out["name"],
+        "dates": out["dates"],
+        "actions": out["actions"],
+        # NaN（维持现状）→ None（JSON 不允许 NaN）
+        "target_weights": [None if w != w else w for w in out["target_weights"]],
+        "trades": out["trades"],
+        "total_return": out["total_return"],
+        "max_drawdown": out["max_drawdown"],
+        "sharpe": out["sharpe"],
+        "win_rate": out["win_rate"],
+        "trade_count": out["trade_count"],
     }
 
 

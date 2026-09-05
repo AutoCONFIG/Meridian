@@ -593,6 +593,37 @@ def test_registered_model_contributes_in_engine(tmp_path):
     assert "ai_prediction" in result.to_markdown() or True  # 报告可见性由因子名保证
 
 
+def test_news_agent_renders_titles_or_skips(tmp_path, monkeypatch):
+    """消息面 Agent：渠道返回 → 标题转述；渠道失败 → 静默缺席（不炸不阻塞）。"""
+    import pandas as pd
+
+    from meridian import research as rmod
+    from meridian.research import NewsAgent, ResearchTeam
+
+    pipeline = _pipeline_with_regime(tmp_path)
+    result = pipeline.analyze("600519", start="2026-01-05", end="2026-12-31", offline=True)
+
+    fake_df = pd.DataFrame({
+        "新闻标题": ["中报出炉：营收稳步增长", "主力资金连续净流入"],
+        "发布时间": ["2026-09-01 10:00:00", "2026-09-04 19:00:00"],
+        "文章来源": ["界面新闻", "证券时报"],
+    })
+    monkeypatch.setattr(rmod, "_fetch_news", lambda symbol, limit=5: fake_df)
+    notes = NewsAgent().investigate(result)
+    assert notes and "中报出炉" in notes[0].body and "证券时报" in notes[0].body
+
+    def boom(symbol, limit=5):
+        raise RuntimeError("断网")
+    monkeypatch.setattr(rmod, "_fetch_news", boom)
+    team = ResearchTeam([rmod.TechnicalPostureAgent(), NewsAgent()])
+    assert team.investigate(result), "新闻失败时其余笔记仍应产出"
+
+    # 港美股无消息面（渠道限定 cn）
+    result.market = "hk"
+    monkeypatch.setattr(rmod, "_fetch_news", lambda symbol, limit=5: fake_df)
+    assert NewsAgent().investigate(result) == []
+
+
 def test_detect_market_patterns():
     """代码模式 → (market, asset_type)。"""
     from meridian.config import _detect_market

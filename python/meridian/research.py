@@ -84,11 +84,51 @@ class VolatilityLiquidityAgent:
         )]
 
 
+def _fetch_news(symbol: str, limit: int = 5):
+    """东财个股新闻（延迟导入 akshare；测试可 monkeypatch 本函数）。"""
+    import akshare as ak
+
+    return ak.stock_news_em(symbol=symbol).head(limit)
+
+
+class NewsAgent:
+    """消息面观察（仅 cn 股）：列出最近新闻标题（东财渠道），只转述不解读。
+
+    拉取失败静默跳过（离线/断网时自然缺席）；标题原文照录，不带倾向判断。
+    """
+
+    name = "news"
+
+    def __init__(self, limit: int = 5):
+        self.limit = limit
+
+    def investigate(self, result) -> list[ResearchNote]:
+        if result.market != "cn":
+            return []
+        df = _fetch_news(result.symbol, self.limit)
+        if df is None or df.empty:
+            return []
+        items = []
+        for _, row in df.iterrows():
+            title = str(row.get("新闻标题", "")).strip()
+            when = str(row.get("发布时间", ""))[:10]
+            src = str(row.get("文章来源", "")).strip()
+            if title:
+                items.append(f"{when}〔{src}〕{title}")
+        if not items:
+            return []
+        return [ResearchNote(
+            agent=self.name,
+            title=f"近期消息面（{result.symbol}）",
+            body="；".join(items) + "。以上为标题转述，不构成判断。",
+        )]
+
+
 class ResearchTeam:
     """跑全部研究 agent，汇总笔记（任何 agent 失败跳过，不阻断）。"""
 
     def __init__(self, agents: list | None = None):
-        self.agents = agents or [TechnicalPostureAgent(), VolatilityLiquidityAgent()]
+        self.agents = agents or [TechnicalPostureAgent(), VolatilityLiquidityAgent(), NewsAgent()]
 
     def investigate(self, result) -> list[ResearchNote]:
         notes: list[ResearchNote] = []

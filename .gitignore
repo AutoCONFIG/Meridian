@@ -23,6 +23,11 @@ reports/
 python/meridian/*.pyd
 python/meridian/*.pdb
 
+# Tauri 桌面壳构建产物
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
 # ZCode 客户端本地状态
 .mimosa/
 
