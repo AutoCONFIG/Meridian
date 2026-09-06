@@ -13,31 +13,35 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
-  header { padding: 10px 20px; border-bottom: 1px solid var(--border);
-           display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; }
+  header { padding: 8px 18px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; }
   header .sub { color: var(--muted); font-size: 12px; }
   header input[type=text] { background: #101625; color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 190px; }
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; width: 180px; }
+  header input#name { width: 100px; }
   header button { background: var(--accent); border: none; border-radius: 8px;
-    padding: 7px 16px; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
+    padding: 6px 14px; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
   header button.ghost { background: #24304d; }
   header button:disabled { opacity: .5; cursor: wait; }
   header label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
   #health { margin-left: auto; font-size: 12px; }
-  main { display: grid; grid-template-columns: 1fr 360px; gap: 12px; padding: 12px 20px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  /* 结论横条：第一屏顶部，行情终端式 */
+  #topbar { display: flex; align-items: center; gap: 22px; padding: 10px 20px;
+            background: var(--panel); border-bottom: 1px solid var(--border);
+            min-height: 58px; flex-wrap: wrap; }
+  #topbar .sym { font-size: 17px; font-weight: 700; }
+  #topbar .sym small { color: var(--muted); font-weight: 400; margin-left: 6px; font-size: 12px; }
+  #topbar .kpi { min-width: 0; }
+  #topbar .kpi .label { color: var(--muted); font-size: 11px; }
+  #topbar .kpi .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #topbar .sep { width: 1px; height: 34px; background: var(--border); }
+  #topbar .hint { color: var(--muted); font-size: 12px; max-width: 420px; }
+  main { display: grid; grid-template-columns: 1fr 330px; gap: 10px; padding: 10px 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
   .panel h2 { font-size: 12px; color: var(--muted); margin: 0 0 8px; letter-spacing: 1px; }
-  #chart { width: 100%; height: 780px; }
+  #chart { width: 100%; height: 760px; }
   #err { color: var(--up); font-size: 12px; min-height: 16px; }
-  .kpis { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
-  .kpi { min-width: 96px; }
-  .kpi .label { color: var(--muted); font-size: 11px; }
-  .kpi .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .badge { display: inline-block; padding: 3px 12px; border-radius: 20px; font-size: 14px; font-weight: 700; }
-  .badge.Add { background: #3d2426; color: var(--up); }
-  .badge.Avoid, .badge.Reduce { background: #1d3328; color: var(--down); }
-  .badge.Hold, .badge.Watch { background: #24304d; color: var(--accent); }
   table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; }
@@ -53,39 +57,45 @@
 <header>
   <h1>Meridian</h1>
   <span class="sub">量化负责可信 · AI 负责理解 · 人负责决策</span>
-  <input type="text" id="symbol" placeholder="代码：600519 / 002475 / 00700 / AAPL" value="600519">
-  <input type="text" id="name" placeholder="名称（可选）" style="width:120px">
+  <input type="text" id="symbol" placeholder="代码：600519 / 159509 / 00700 / AAPL" value="600519">
+  <input type="text" id="name" placeholder="名称（可选）">
   <button id="go">分析</button>
   <button id="bt" class="ghost">叠加回测信号</button>
   <label><input type="checkbox" id="offline"> 离线</label>
   <span id="health"></span>
 </header>
+<div id="topbar">
+  <div class="sym"><span id="tSym">—</span><small id="tName"></small></div>
+  <div class="sep"></div>
+  <div class="kpi"><div class="label">机会</div><div class="value" id="tOpp">—</div></div>
+  <div class="kpi"><div class="label">风险</div><div class="value" id="tRisk">—</div></div>
+  <div class="kpi"><div class="label">建议</div><div class="value"><span class="badge" id="tAction">—</span>
+    <div class="muted" id="tHint"></div></div></div>
+  <div class="kpi"><div class="label">市场状态</div><div class="value" style="font-size:18px" id="tRegime">—</div></div>
+  <div class="sep"></div>
+  <div class="hint" id="tOutlook">分析后显示明日区间与动量外推</div>
+</div>
 <main>
   <section>
     <div class="panel" style="padding:6px">
       <div id="err" style="padding:0 8px"></div>
       <div id="chart"></div>
     </div>
-    <div class="panel" style="margin-top:12px">
+    <div class="panel" style="margin-top:10px">
       <h2>触发明细（分数为什么）</h2>
       <div id="factors"></div>
     </div>
   </section>
   <section>
-    <div class="panel" style="margin-bottom:12px">
-      <h2>结论</h2>
-      <div id="kpi" class="kpis"></div>
-      <div id="funda" class="muted"></div>
-    </div>
-    <div class="panel" style="margin-bottom:12px">
+    <div class="panel" style="margin-bottom:10px">
       <h2>短期预判（统计外推，非保证）</h2>
       <div id="outlook" class="muted">← 点「分析」</div>
     </div>
-    <div class="panel" style="margin-bottom:12px">
-      <h2>K线形态（最近 5 个，悬停图中标注看含义）</h2>
+    <div class="panel" style="margin-bottom:10px">
+      <h2>K线形态（最近 5 个，图中带文字标注）</h2>
       <div id="patternList" class="muted">← 点「分析」</div>
     </div>
-    <div class="panel" style="margin-bottom:12px">
+    <div class="panel" style="margin-bottom:10px">
       <h2>研究视角（客观事实，无评分）</h2>
       <ul id="notes" style="margin:0;padding-left:18px;font-size:12.5px"></ul>
     </div>
@@ -171,6 +181,17 @@ function boll(closes, n = 20, k = 2) {
   return { mid, up, lo };
 }
 
+/* ---- 滑窗记忆（localStorage）：记住用户调整的区间，跨标的/重启保持 ---- */
+const ZOOM_KEY = "meridian_zoom";
+function loadZoom() {
+  try {
+    const z = JSON.parse(localStorage.getItem(ZOOM_KEY) || "null");
+    if (z && typeof z.start === "number" && z.end > z.start) return z;
+  } catch {}
+  return null;
+}
+let zoomWatch = false;
+
 /* ---- K线主图 ---- */
 function drawChart(bars, meta, bt, outlook, patterns) {
   const dates = bars.dates, closes = bars.close;
@@ -178,6 +199,11 @@ function drawChart(bars, meta, bt, outlook, patterns) {
   const b = boll(closes);
   const m = macd(closes), r = rsi(closes, 14);
   const hasBT = !!bt;
+  // 滑窗：默认最近 30 根；用户调过则用记忆值（百分比，跨标的通用）
+  const saved = loadZoom();
+  const defStart = Math.max(0, 100 * (1 - 30 / dates.length));
+  const zStart = saved ? saved.start : defStart;
+  const zEnd = saved ? saved.end : 100;
   const grids = [
     { left: 62, right: 20, top: 28, height: "40%" },   // 价格
     { left: 62, right: 20, top: "47%", height: "10%" },// 成交量
@@ -195,18 +221,26 @@ function drawChart(bars, meta, bt, outlook, patterns) {
     axisLine: { lineStyle: { color: "#26304a" } }, axisLabel: { color: "#8b96ad", fontSize: 10 }, splitLine: { show: false } });
   const zoomIdx = [...Array(xAxes.length).keys()];
 
-  // 形态标注 scatter（bull 在 low 下方红▲，bear 在 high 上方绿▼，neutral 灰圈）
+  // 形态标注：三角箭头 + **最近 10 个直接带文字指示**（更早的悬停可看）
+  const labeledDates = new Set((patterns || []).slice(-10).map(p => p.date));
   const patSeries = (patterns || []).map(p => {
     const i = dates.indexOf(p.date);
     if (i < 0) return null;
     const isBull = p.bias === "bullish", isBear = p.bias === "bearish";
+    const color = isBear ? "#3fa66b" : (isBull ? "#e05252" : "#8b96ad");
+    const withText = labeledDates.has(p.date);
     return {
       value: [p.date, isBear ? bars.high[i] : bars.low[i]],
       symbol: isBear ? "triangle" : (isBull ? "triangle" : "circle"),
       symbolRotate: isBear ? 180 : 0,
-      symbolSize: isBear ? 9 : (isBull ? 9 : 6),
+      symbolSize: withText ? 10 : (isBear || isBull ? 9 : 6),
       symbolOffset: [0, isBear ? -12 : 12],
-      itemStyle: { color: isBear ? "#3fa66b" : (isBull ? "#e05252" : "#8b96ad") },
+      itemStyle: { color },
+      label: withText ? {
+        show: true, formatter: p.name, fontSize: 10, color,
+        position: isBear ? "top" : "bottom", distance: 8,
+        textBorderColor: "#0f1420", textBorderWidth: 2,
+      } : { show: false },
       name: p.name, desc: p.desc, bias: p.bias,
     };
   }).filter(Boolean);
@@ -254,9 +288,9 @@ function drawChart(bars, meta, bt, outlook, patterns) {
       ...(hasBT ? [{ gridIndex: 4, min: 0, max: 1, show: false }] : []),
     ],
     dataZoom: [
-      { type: "inside", xAxisIndex: zoomIdx },
+      { type: "inside", xAxisIndex: zoomIdx, start: zStart, end: zEnd },
       { type: "slider", xAxisIndex: zoomIdx, bottom: 2, height: 16,
-        borderColor: "#26304a", textStyle: { color: "#8b96ad" } },
+        start: zStart, end: zEnd, borderColor: "#26304a", textStyle: { color: "#8b96ad" } },
     ],
     series,
   };
@@ -266,6 +300,15 @@ function drawChart(bars, meta, bt, outlook, patterns) {
   } catch (e) {
     showErr("图表渲染失败: " + e.message);
     return;
+  }
+  if (!zoomWatch) {
+    zoomWatch = true;
+    chart.on("datazoom", () => {
+      const dz = (chart.getOption().dataZoom || [])[0] || {};
+      if (typeof dz.start === "number") {
+        try { localStorage.setItem(ZOOM_KEY, JSON.stringify({ start: dz.start, end: dz.end })); } catch {}
+      }
+    });
   }
 }
 
@@ -324,17 +367,20 @@ function signalSeries(bt, dates) {
 
 /* ---- 面板渲染 ---- */
 function renderPanels(d) {
-  const hint = d.position_hint == null ? "—" : Math.round(d.position_hint * 100) + "%";
-  $("kpi").innerHTML = `
-    <div class="kpi"><div class="label">机会</div><div class="value">${fmt(d.opportunity)}</div></div>
-    <div class="kpi"><div class="label">风险</div><div class="value">${fmt(d.risk)}</div></div>
-    <div class="kpi"><div class="label">建议</div><div class="value"><span class="badge ${d.action}">${d.action}</span></div>
-      <div class="muted">规则仓位 ${hint}</div></div>
-    <div class="kpi"><div class="label">市场状态</div><div class="value" style="font-size:20px">${d.regime}</div></div>`;
-  $("funda").textContent = d.fundamentals
-    ? `基本面（${d.fundamentals.date}）：PE-TTM ${fmt(d.fundamentals.pe_ttm, 2)} / PB ${fmt(d.fundamentals.pb, 2)} / 总市值 ${fmt(d.fundamentals.total_mv, 0)} 亿（${d.fundamentals.source}）`
-    : "基本面：暂无数据";
+  // 顶部结论横条
+  $("tSym").textContent = d.symbol;
+  $("tName").textContent = d.name;
+  $("tOpp").textContent = fmt(d.opportunity);
+  $("tOpp").style.color = d.opportunity >= 50 ? "var(--up)" : "var(--down)";
+  $("tRisk").textContent = fmt(d.risk);
+  $("tRisk").style.color = d.risk >= 65 ? "var(--up)" : d.risk <= 40 ? "var(--down)" : "var(--text)";
+  const act = $("tAction");
+  act.textContent = d.action;
+  act.className = "badge " + d.action;
+  $("tHint").textContent = d.position_hint == null ? "无仓位参考" : `规则仓位 ${Math.round(d.position_hint * 100)}%`;
+  $("tRegime").textContent = d.regime;
 
+  // 右栏：预判 + 基本面合并
   const o = d.outlook;
   if (o) {
     const dir = { up: "偏多", down: "偏空", neutral: "中性" }[o.momentum_direction] || o.momentum_direction;
@@ -345,6 +391,10 @@ function renderPanels(d) {
       `20 日动量外推：<b style="color:${o.expected_20d > 0 ? "var(--up)" : "var(--down)"}">${(o.expected_20d * 100).toFixed(1)}%</b>（${dir}）<br>` +
       `关键位：MA20 ${fmt(o.ma20, 2)}／MA60 ${fmt(o.ma60, 2)}／20日高 ${fmt(o.high20, 2)}／低 ${fmt(o.low20, 2)}`;
   } else $("outlook").textContent = "数据不足 60 根，无法计算预判";
+  $("tOutlook").textContent = o
+    ? `明日区间 ${fmt(o.range_68[0], 2)}~${fmt(o.range_68[1], 2)}（±1σ）· 20日外推 ${(o.expected_20d * 100).toFixed(1)}%`
+      + (d.fundamentals ? ` · PE ${fmt(d.fundamentals.pe_ttm, 1)}` : "")
+    : "数据不足，无预判";
 
   const biasText = { bullish: "偏多", bearish: "偏空", neutral: "中性" };
   const pats = (d.patterns || []).slice(-5);
